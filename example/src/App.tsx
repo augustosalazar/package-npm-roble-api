@@ -7,7 +7,11 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
-import { createRobleClient, RobleApiException } from 'react-native-roble-api-database-rn';
+import {
+  createRobleClient,
+  RobleApiException,
+  RobleApiHttpException,
+} from 'react-native-roble-api-database-rn';
 
 export default function App() {
   const [log, setLog] = useState<string>('');
@@ -19,22 +23,18 @@ export default function App() {
   const db = useMemo(
     () =>
       createRobleClient({
-        baseURL: 'https://roble-api.openlab.uninorte.edu.co',
-        codeUrl: 'robleapidatabase_e13b5d56c6',
+        baseUrl: 'https://roble-api.openlab.uninorte.edu.co',
+        contractId: 'robleapidatabase_e13b5d56c6',
         authHeaders: { 'x-app': 'roble-mobile' },
         dataHeaders: { 'x-app': 'roble-mobile' },
       }),
     []
   );
 
-  // Opcional: sincroniza el token al hacer login/logout
-  db.onTokenUpdate = (token) => setAccessToken(token);
-
-  // Actualiza el estado global del token automáticamente
-  (db as any).onTokenUpdate = (token: string | null) => {
-    setAccessToken(token);
-  };
-
+  // El cliente avisa cada vez que cambia el access token.
+  useEffect(() => {
+    db.onTokenUpdate = (token) => setAccessToken(token);
+  }, [db]);
 
   const appendLog = (text: string) =>
     setLog((prev) => prev + text + '\n');
@@ -47,7 +47,11 @@ export default function App() {
       const email = `test_user_${Date.now()}@mail.com`;
       appendLog(`Creando usuario: ${email}`);
 
-      const res = await db.register('Usuario Prueba', email, 'Password123!');
+      const res = await db.register({
+        name: 'Usuario Prueba',
+        email,
+        password: 'Password123!',
+      });
       setLastEmail(email);
       appendLog(`Usuario creado: ${res.email ?? email}`);
     } catch (e: any) {
@@ -66,11 +70,22 @@ export default function App() {
     try {
       setLoading(true);
       appendLog(`Iniciando sesión con ${lastEmail}...`);
-      const res = await db.login(lastEmail, 'Password123!');
-      setAccessToken(res.accessToken);
-      appendLog(`Sesión iniciada. Token: ${res.accessToken.substring(0, 25)}...`);
-    } catch (e: any) {
-      appendLog(`Error al iniciar sesión: ${e?.message}`);
+      const res = await db.login({
+        email: lastEmail,
+        password: 'Password123!',
+      });
+      appendLog(
+        `Sesión iniciada. Token: ${String(res.accessToken).substring(0, 25)}...`
+      );
+    } catch (e) {
+      // Las excepciones tipadas permiten distinguir el tipo de fallo.
+      if (e instanceof RobleApiHttpException) {
+        appendLog(`El servidor respondió ${e.statusCode}: ${e.message}`);
+      } else if (e instanceof RobleApiException) {
+        appendLog(`Error al iniciar sesión: ${e.message}`);
+      } else {
+        appendLog(`Error inesperado: ${String(e)}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -85,8 +100,7 @@ export default function App() {
     try {
       setLoading(true);
       appendLog('Cerrando sesión...');
-      await db.logout();   // sin argumentos
-      setAccessToken(null);
+      await db.logout(); // sin argumentos; limpia los tokens
       appendLog('Sesión cerrada correctamente.');
     } catch (e: any) {
       appendLog(`Error cerrando sesión: ${e?.message}`);
