@@ -68,5 +68,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build example for Web
+        working-directory: example/expo
         run: |
-          yarn example expo export --platform web
+          npm install
+          npx expo export --platform web

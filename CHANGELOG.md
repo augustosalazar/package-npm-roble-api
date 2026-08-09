@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.0
+
+Cobertura completa de la API documentada de ROBLE: de 8 a 19 endpoints.
+
+### Añadido
+
+- Autenticación: `signupWithVerification()` (`/signup`), `verifyEmail()`,
+  `resendCode()`, `currentUser()` (`/verify-token`, el único endpoint que
+  devuelve la identidad del usuario), `forgotPassword()`, `resetPassword()` y
+  `deleteAccount()`.
+- Datos: `createMany()` (`/insert`), `executeQuery()` (`/execute-query`, la vía
+  para joins, orden y paginación), `createTableFromTemplate()` y
+  `publicRead()` (`/public-read`, sin autenticación).
+- Tipos `RobleInsertResult`, `RobleSkippedRecord`, `RobleQueryResult` y
+  `RobleUser`.
+
+### Corregido
+
+- **`create()` podía informar éxito sobre una fila rechazada.** Enviaba el
+  registro a `/insert`, que responde `200` con `{inserted: [], skipped: [...]}`
+  cuando el servidor lo rechaza; al no haber nada en `inserted`, el método
+  devolvía ese objeto como si fuera la fila creada, sin `_id` y sin error.
+  Ahora usa `/insert-one`, que devuelve la fila directamente y falla con un
+  error HTTP si la rechaza.
+- Para insertar varios registros, `createMany()` expone `skipped` en lugar de
+  descartarlo. Revisa `hasSkipped` después de cada llamada.
+
 ## 1.0.0
 
 Primera versión publicada como `roble-client`. Sustituye a

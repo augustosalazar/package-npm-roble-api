@@ -1,12 +1,15 @@
 {
-  "name": "roble-client-example",
+  "name": "roble-client-expo-example",
   "version": "1.0.0",
+  "private": true,
+  "description": "App Expo (React Native) que consume roble-client desde npm.",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
@@ -16,12 +19,10 @@
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
     "react-native-web": "~0.21.0",
-    "roble-client": "file:.."
+    "roble-client": "^1.0.0"
   },
-  "private": true,
   "devDependencies": {
-    "react-native-builder-bob": "^0.40.13",
-    "react-native-monorepo-config": "^0.1.9",
+    "@types/react": "^19.1.12",
     "typescript": "~5.9.2"
   }
 }

@@ -1,0 +1,13 @@
+{
+  "name": "roble-client-node-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demuestra que roble-client funciona en Node.js puro, sin React ni React Native.",
+  "scripts": {
+    "start": "node index.mjs",
+    "start:cjs": "node index.cjs"
+  },
+  "dependencies": {
+    "roble-client": "^1.0.0"
+  }
+}

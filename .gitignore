@@ -43,10 +43,10 @@ android.iml
 
 # Cocoapods
 #
-example/ios/Pods
+example/expo/ios/Pods
 
 # Ruby
-example/vendor/
+example/expo/vendor/
 
 # node.js
 #
@@ -84,3 +84,17 @@ android/generated
 
 # React Native Nitro Modules
 nitrogen/
+
+# Ejemplos: artefactos generados al instalarlos o ejecutarlos.
+# Cada ejemplo es independiente y se instala con `npm install`, así que sus
+# lockfiles y su salida de build no se versionan.
+example/*/package-lock.json
+example/*/yarn.lock
+example/*/dist/
+example/*/web-build/
+example/*/.expo/
+example/*/expo-env.d.ts
+example/*/ios/
+example/*/android/
+.metro-health-check*
+*.tsbuildinfo

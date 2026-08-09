@@ -78,6 +78,47 @@ export interface RobleApiColumn {
   default?: any;
 }
 
+/** Registro que el servidor rechazó durante un `POST /insert`. */
+export interface RobleSkippedRecord {
+  /** Posición del registro en la lista enviada. */
+  index: number;
+  /** Motivo indicado por el servidor. */
+  reason: string;
+}
+
+/**
+ * Resultado de insertar varios registros con `createMany`.
+ *
+ * El endpoint `/insert` responde `200` aunque haya rechazado registros, así
+ * que siempre conviene revisar `skipped` antes de dar la escritura por buena.
+ */
+export interface RobleInsertResult {
+  /** Registros efectivamente insertados, con su `_id` generado. */
+  inserted: Array<Record<string, any>>;
+  /** Registros rechazados, con su posición y motivo. */
+  skipped: RobleSkippedRecord[];
+  /** `true` si el servidor rechazó al menos un registro. */
+  hasSkipped: boolean;
+}
+
+/** Resultado de `POST /execute-query`. */
+export interface RobleQueryResult {
+  success: boolean;
+  command: string | null;
+  rowCount: number;
+  rows: any[];
+  fields: Array<{ name: string; dataTypeID?: number }>;
+}
+
+/** Usuario autenticado, devuelto por `GET /verify-token`. */
+export interface RobleUser {
+  sub: string;
+  email: string;
+  dbName?: string;
+  sessionId?: string;
+  [key: string]: any;
+}
+
 export interface RobleApiConfig {
   /** Host del backend, p. ej: https://roble.test-openlab.uninorte.edu.co */
   baseUrl: string;
@@ -151,10 +192,11 @@ export class RobleApiClient {
       timeout: config.timeoutMs ?? RobleApiClient.DEFAULT_TIMEOUT_MS,
     });
 
-    // Anexa Authorization automáticamente si hay token.
+    // Anexa Authorization automáticamente si hay token, salvo que la
+    // petición lo desactive con `skipAuth` (endpoints públicos).
     this.http.interceptors.request.use((cfg) => {
       cfg.headers = cfg.headers ?? {};
-      if (this.accessTokenValue) {
+      if (!(cfg as any).skipAuth && this.accessTokenValue) {
         (cfg.headers as any).Authorization = `Bearer ${this.accessTokenValue}`;
       }
       return cfg;
@@ -264,11 +306,13 @@ export class RobleApiClient {
       query,
       extraHeaders,
       isAuthRequest = false, // true solo para login/refresh/signup/logout
+      skipAuth = false, // true para endpoints públicos
     }: {
       body?: any;
       query?: Record<string, any>;
       extraHeaders?: RobleApiHeaders;
       isAuthRequest?: boolean;
+      skipAuth?: boolean;
     } = {}
   ): Promise<T> {
     const cfg: AxiosRequestConfig = {
@@ -281,6 +325,7 @@ export class RobleApiClient {
       params: query,
       data: body ? JSON.stringify(body) : undefined,
       validateStatus: () => true, // manejamos el status manualmente
+      ...({ skipAuth } as any),
     };
 
     let res = await this.send(cfg);
@@ -289,7 +334,12 @@ export class RobleApiClient {
     if (res.status >= 200 && res.status < 300) return res.data as T;
 
     // 401 en endpoints de DATA: refrescamos y reintentamos una sola vez.
-    if (res.status === 401 && !isAuthRequest && this.refreshTokenValue) {
+    if (
+      res.status === 401 &&
+      !isAuthRequest &&
+      !skipAuth &&
+      this.refreshTokenValue
+    ) {
       try {
         await this.refreshAccessToken();
       } catch (e) {
@@ -326,6 +376,45 @@ export class RobleApiClient {
     });
   }
 
+  /**
+   * Registra un usuario y envía un código de verificación por correo.
+   *
+   * El registro no queda activo hasta llamar a `verifyEmail` con el código.
+   */
+  async signupWithVerification(params: {
+    email: string;
+    password: string;
+    name: string;
+  }): Promise<Record<string, any>> {
+    return this._makeRequest('auth', 'POST', 'signup', {
+      body: {
+        email: params.email,
+        password: params.password,
+        name: params.name,
+      },
+      isAuthRequest: true,
+    });
+  }
+
+  /** Confirma el correo con el código de 6 dígitos recibido. */
+  async verifyEmail(params: {
+    email: string;
+    code: string;
+  }): Promise<Record<string, any>> {
+    return this._makeRequest('auth', 'POST', 'verify-email', {
+      body: { email: params.email, code: params.code },
+      isAuthRequest: true,
+    });
+  }
+
+  /** Reenvía el código de verificación. */
+  async resendCode(params: { email: string }): Promise<Record<string, any>> {
+    return this._makeRequest('auth', 'POST', 'resend-code', {
+      body: { email: params.email },
+      isAuthRequest: true,
+    });
+  }
+
   /** Inicia sesión y almacena los tokens internamente. */
   async login(params: {
     email: string;
@@ -354,6 +443,64 @@ export class RobleApiClient {
 
     // Sin body: el token viaja en el header Authorization.
     await this._makeRequest('auth', 'POST', 'logout', { isAuthRequest: true });
+
+    this.clearTokens();
+  }
+
+  /**
+   * Devuelve los datos del usuario autenticado (`sub`, `email`, `dbName`,
+   * `sessionId`). Es el único endpoint que expone la identidad del usuario.
+   *
+   * Lanza `RobleApiHttpException` con `401` si el token no es válido.
+   */
+  async currentUser(): Promise<RobleUser> {
+    const res = await this._makeRequest<any>('auth', 'GET', 'verify-token', {
+      isAuthRequest: true,
+    });
+
+    if (res?.user) return res.user as RobleUser;
+    throw new RobleApiFormatException(
+      'Respuesta inesperada al verificar el token.'
+    );
+  }
+
+  /** Envía un correo con el enlace de restablecimiento de contraseña. */
+  async forgotPassword(params: {
+    email: string;
+  }): Promise<Record<string, any>> {
+    return this._makeRequest('auth', 'POST', 'forgot-password', {
+      body: { email: params.email },
+      isAuthRequest: true,
+    });
+  }
+
+  /** Restablece la contraseña con el token recibido por correo. */
+  async resetPassword(params: {
+    token: string;
+    newPassword: string;
+  }): Promise<Record<string, any>> {
+    return this._makeRequest('auth', 'POST', 'reset-password', {
+      body: { token: params.token, newPassword: params.newPassword },
+      isAuthRequest: true,
+    });
+  }
+
+  /**
+   * Elimina permanentemente la cuenta autenticada y limpia la sesión local.
+   *
+   * La operación no se puede deshacer: pide confirmación al usuario antes
+   * de llamarla.
+   */
+  async deleteAccount(): Promise<void> {
+    if (!this.accessTokenValue) {
+      throw new RobleApiAuthException(
+        'No hay sesión activa para eliminar la cuenta.'
+      );
+    }
+
+    await this._makeRequest('auth', 'DELETE', 'account', {
+      isAuthRequest: true,
+    });
 
     this.clearTokens();
   }
@@ -406,18 +553,82 @@ export class RobleApiClient {
     });
   }
 
-  /** Inserta un registro y devuelve el registro insertado. */
+  /**
+   * Clona la estructura de columnas de una tabla existente.
+   *
+   * Es el único mecanismo de creación de tablas documentado por la API, y
+   * requiere que `templateTableName` ya exista. No copia los datos.
+   */
+  async createTableFromTemplate(params: {
+    tableName: string;
+    templateTableName: string;
+  }): Promise<Record<string, any>> {
+    return this._makeRequest('database', 'POST', 'create-table-from-template', {
+      body: {
+        tableName: params.tableName,
+        templateTableName: params.templateTableName,
+      },
+    });
+  }
+
+  /**
+   * Inserta un registro y devuelve la fila creada, con su `_id`.
+   *
+   * Usa `/insert-one`, que devuelve el registro directamente. Si el servidor
+   * rechaza la fila, responde con un error HTTP en lugar de un `200` vacío.
+   */
   async create(
     tableName: string,
     data: Record<string, any>
   ): Promise<Record<string, any>> {
-    const res = await this._makeRequest<any>('database', 'POST', 'insert', {
-      body: { tableName, records: [data] },
+    const res = await this._makeRequest<any>('database', 'POST', 'insert-one', {
+      body: { tableName, record: data },
     });
 
-    if (res?.inserted?.length) return { ...res.inserted[0] };
     if (res && typeof res === 'object') return res;
-    throw new RobleApiException('No se pudo insertar el registro');
+    throw new RobleApiFormatException('No se pudo insertar el registro');
+  }
+
+  /**
+   * Inserta varios registros.
+   *
+   * El servidor responde `200` aunque rechace parte de los registros, así que
+   * el resultado expone `skipped`. Revísalo siempre:
+   *
+   * ```ts
+   * const res = await db.createMany('usuarios', registros);
+   * if (res.hasSkipped) {
+   *   res.skipped.forEach((s) =>
+   *     console.warn(`Fila ${s.index} rechazada: ${s.reason}`)
+   *   );
+   * }
+   * ```
+   */
+  async createMany(
+    tableName: string,
+    records: Array<Record<string, any>>
+  ): Promise<RobleInsertResult> {
+    const res = await this._makeRequest<any>('database', 'POST', 'insert', {
+      body: { tableName, records },
+    });
+
+    if (!res || typeof res !== 'object') {
+      throw new RobleApiFormatException(
+        'Respuesta inesperada al insertar registros'
+      );
+    }
+
+    const inserted: Array<Record<string, any>> = Array.isArray(res.inserted)
+      ? res.inserted
+      : [];
+    const skipped: RobleSkippedRecord[] = Array.isArray(res.skipped)
+      ? res.skipped.map((s: any) => ({
+          index: Number(s?.index ?? -1),
+          reason: String(s?.reason ?? 'sin motivo'),
+        }))
+      : [];
+
+    return { inserted, skipped, hasSkipped: skipped.length > 0 };
   }
 
   async read(
@@ -470,6 +681,62 @@ export class RobleApiClient {
         idValue: id,
       },
     });
+  }
+
+  /**
+   * Lee una tabla marcada como pública, sin autenticación.
+   *
+   * Un `403` significa que la tabla no está configurada como pública en la
+   * consola de Roble, no que el token sea inválido.
+   */
+  async publicRead(
+    tableName: string,
+    filters?: Record<string, any>
+  ): Promise<Array<Record<string, any>>> {
+    const query: Record<string, string> = { tableName };
+    if (filters) {
+      Object.entries(filters).forEach(([k, v]) => {
+        query[k] = String(v);
+      });
+    }
+
+    const res = await this._makeRequest<any>('database', 'GET', 'public-read', {
+      query,
+      skipAuth: true,
+    });
+
+    if (Array.isArray(res)) return res as Array<Record<string, any>>;
+    if (Array.isArray(res?.data)) return res.data;
+    return [];
+  }
+
+  /**
+   * Ejecuta una consulta guardada previamente en la consola de Roble.
+   *
+   * Es la vía para joins, agregados, ordenamiento y paginación: `read` solo
+   * admite filtros de igualdad. `id` es el UUID de la consulta guardada.
+   */
+  async executeQuery(id: string, params?: any[]): Promise<RobleQueryResult> {
+    const res = await this._makeRequest<any>(
+      'database',
+      'POST',
+      'execute-query',
+      { body: params ? { id, params } : { id } }
+    );
+
+    if (!res || typeof res !== 'object') {
+      throw new RobleApiFormatException(
+        'Respuesta inesperada al ejecutar la consulta'
+      );
+    }
+
+    return {
+      success: res.success === true,
+      command: res.command ?? null,
+      rowCount: Number(res.rowCount ?? 0),
+      rows: Array.isArray(res.rows) ? res.rows : [],
+      fields: Array.isArray(res.fields) ? res.fields : [],
+    };
   }
 
   // ============================
