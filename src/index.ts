@@ -123,34 +123,14 @@ export interface RobleApiConfig {
   /** Host del backend, p. ej: https://roble.test-openlab.uninorte.edu.co */
   baseUrl: string;
 
-  /** Identificador del contrato de autenticación (ruta `/auth/{contractId}`). */
-  contractId: string;
-
   /**
-   * Identificador del proyecto de datos (ruta `/database/{projectId}`).
-   * Si se omite, se reutiliza [contractId].
+   * Identificador del contrato. Compone `/auth/{contractId}` y
+   * `/database/{contractId}`.
    */
-  projectId?: string;
-
-  /** Headers para AUTH (opcional) */
-  authHeaders?: RobleApiHeaders;
-
-  /** Headers para DATA/DB (opcional) */
-  dataHeaders?: RobleApiHeaders;
+  contractId: string;
 
   /** Timeout en ms (default 30000) */
   timeoutMs?: number;
-
-  /**
-   * Escape hatch para componer la ruta final. Por defecto:
-   *   auth: /auth/{contractId}/{endpoint}
-   *   data: /database/{projectId}/{endpoint}
-   */
-  pathBuilder?: (
-    kind: 'auth' | 'database',
-    endpoint: string,
-    id: string
-  ) => string;
 }
 
 // ============================
@@ -160,10 +140,6 @@ export class RobleApiClient {
   static DEFAULT_TIMEOUT_MS = 30_000;
 
   private readonly contractId: string;
-  private readonly projectId: string;
-  private readonly authHeaders: RobleApiHeaders;
-  private readonly dataHeaders: RobleApiHeaders;
-  private readonly pathBuilder: NonNullable<RobleApiConfig['pathBuilder']>;
   private readonly http: AxiosInstance;
 
   private accessTokenValue: string | null = null;
@@ -177,15 +153,6 @@ export class RobleApiClient {
 
   constructor(config: RobleApiConfig) {
     this.contractId = config.contractId;
-    this.projectId = config.projectId ?? config.contractId;
-    this.authHeaders = config.authHeaders ?? {};
-    this.dataHeaders = config.dataHeaders ?? {};
-    this.pathBuilder =
-      config.pathBuilder ??
-      ((kind, endpoint, id) =>
-        kind === 'auth'
-          ? `/auth/${id}/${endpoint}`
-          : `/database/${id}/${endpoint}`);
 
     this.http = axios.create({
       baseURL: config.baseUrl.replace(/\/+$/, ''), // sin / final
@@ -237,23 +204,10 @@ export class RobleApiClient {
   // ============================
   //  Helpers internos
   // ============================
-  private mergeHeaders(
-    base: RobleApiHeaders,
-    extra?: RobleApiHeaders
-  ): RobleApiHeaders {
-    return {
-      'Content-Type': 'application/json',
-      ...base,
-      ...(extra ?? {}),
-    };
-  }
-
   private buildPath(kind: 'auth' | 'database', endpoint: string) {
-    return this.pathBuilder(
-      kind,
-      endpoint,
-      kind === 'auth' ? this.contractId : this.projectId
-    );
+    return kind === 'auth'
+      ? `/auth/${this.contractId}/${endpoint}`
+      : `/database/${this.contractId}/${endpoint}`;
   }
 
   /** Traduce cualquier fallo de transporte a una excepción del paquete. */
@@ -304,13 +258,11 @@ export class RobleApiClient {
     {
       body,
       query,
-      extraHeaders,
       isAuthRequest = false, // true solo para login/refresh/signup/logout
       skipAuth = false, // true para endpoints públicos
     }: {
       body?: any;
       query?: Record<string, any>;
-      extraHeaders?: RobleApiHeaders;
       isAuthRequest?: boolean;
       skipAuth?: boolean;
     } = {}
@@ -318,10 +270,7 @@ export class RobleApiClient {
     const cfg: AxiosRequestConfig = {
       url: this.buildPath(kind, endpoint),
       method,
-      headers: this.mergeHeaders(
-        kind === 'auth' ? this.authHeaders : this.dataHeaders,
-        extraHeaders
-      ),
+      headers: { 'Content-Type': 'application/json' },
       params: query,
       data: body ? JSON.stringify(body) : undefined,
       validateStatus: () => true, // manejamos el status manualmente

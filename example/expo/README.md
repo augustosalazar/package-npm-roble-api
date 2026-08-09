@@ -44,9 +44,6 @@ const db = createRobleClient({
 });
 ```
 
-Si tu proyecto de datos usa un identificador distinto al del contrato de
-autenticación, añade `projectId`.
-
 ## Qué demuestra
 
 | Botón | Métodos |

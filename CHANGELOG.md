@@ -1,6 +1,18 @@
 # Changelog
 
+## 2.0.0
+
+### Cambios incompatibles
+
+- La configuración se reduce a `{baseUrl, contractId, timeoutMs?}`. Se
+  eliminan `projectId`, `authHeaders`, `dataHeaders` y `pathBuilder`: ninguno
+  era necesario para hablar con ROBLE, que solo requiere `Content-Type` y
+  `Authorization`, y ambos los pone el cliente. `contractId` se usa ahora para
+  las dos rutas, `/auth` y `/database`.
+
 ## 1.1.0
+
+> No publicada: sus cambios salieron en 2.0.0.
 
 Cobertura completa de la API documentada de ROBLE: de 8 a 19 endpoints.
 

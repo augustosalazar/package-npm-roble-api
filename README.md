@@ -79,9 +79,6 @@ await db.logout();
 const db = createRobleClient({
   baseUrl: 'https://roble.test-openlab.uninorte.edu.co',
   contractId: 'token_contract_xyz',
-  projectId: 'token_project_xyz', // opcional
-  authHeaders: { 'x-app': 'roble-mobile' }, // opcional
-  dataHeaders: { 'x-app': 'roble-mobile' }, // opcional
   timeoutMs: 30_000, // opcional, default 30 s
 });
 ```
@@ -89,13 +86,11 @@ const db = createRobleClient({
 | Campo | Descripción |
 | --- | --- |
 | `baseUrl` | Host del backend. Una barra final se ignora. |
-| `contractId` | Identificador del contrato de autenticación → `/auth/{contractId}`. |
-| `projectId` | Identificador del proyecto de datos → `/database/{projectId}`. Si se omite, se reutiliza `contractId`. |
-| `authHeaders` / `dataHeaders` | Headers extra por grupo de endpoints. |
-| `timeoutMs` | Timeout por petición, 30 000 ms por defecto. |
-| `pathBuilder` | Escape hatch para componer rutas no estándar. Sin equivalente en el paquete Flutter. |
+| `contractId` | Identificador del contrato. Compone `/auth/{contractId}` y `/database/{contractId}`. |
+| `timeoutMs` | Opcional. Timeout por petición, 30 000 ms por defecto. |
 
-`Content-Type: application/json` se agrega automáticamente.
+Eso es toda la configuración. `Content-Type: application/json` y
+`Authorization: Bearer …` los gestiona el cliente por su cuenta.
 
 ---
 

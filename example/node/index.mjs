@@ -16,7 +16,6 @@ import {
 const {
   ROBLE_BASE_URL = 'https://roble-api.openlab.uninorte.edu.co',
   ROBLE_CONTRACT_ID,
-  ROBLE_PROJECT_ID,
   ROBLE_EMAIL,
   ROBLE_PASSWORD,
   ROBLE_TABLE = 'usuarios_test',
@@ -25,7 +24,6 @@ const {
 const db = createRobleClient({
   baseUrl: ROBLE_BASE_URL,
   contractId: ROBLE_CONTRACT_ID ?? 'mi_contrato',
-  projectId: ROBLE_PROJECT_ID,
 });
 
 // El cliente avisa cada vez que cambia el access token.
@@ -44,7 +42,7 @@ function offlineCheck() {
 
   console.log('\nPara ejecutar el ciclo completo, define las variables:');
   console.log('  ROBLE_CONTRACT_ID, ROBLE_EMAIL, ROBLE_PASSWORD');
-  console.log('  (opcionales: ROBLE_BASE_URL, ROBLE_PROJECT_ID, ROBLE_TABLE)');
+  console.log('  (opcionales: ROBLE_BASE_URL, ROBLE_TABLE)');
 }
 
 async function fullFlow() {

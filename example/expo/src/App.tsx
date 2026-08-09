@@ -25,8 +25,6 @@ export default function App() {
       createRobleClient({
         baseUrl: 'https://roble-api.openlab.uninorte.edu.co',
         contractId: 'robleapidatabase_e13b5d56c6',
-        authHeaders: { 'x-app': 'roble-mobile' },
-        dataHeaders: { 'x-app': 'roble-mobile' },
       }),
     []
   );
