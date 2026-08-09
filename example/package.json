@@ -1,5 +1,5 @@
 {
-  "name": "react-native-roble-api-database-rn-example",
+  "name": "roble-client-example",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -16,7 +16,7 @@
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
     "react-native-web": "~0.21.0",
-    "react-native-roble-api-database-rn": "file:.."
+    "roble-client": "file:.."
   },
   "private": true,
   "devDependencies": {

@@ -11,7 +11,7 @@ import {
   createRobleClient,
   RobleApiException,
   RobleApiHttpException,
-} from 'react-native-roble-api-database-rn';
+} from 'roble-client';
 
 export default function App() {
   const [log, setLog] = useState<string>('');
@@ -36,8 +36,7 @@ export default function App() {
     db.onTokenUpdate = (token) => setAccessToken(token);
   }, [db]);
 
-  const appendLog = (text: string) =>
-    setLog((prev) => prev + text + '\n');
+  const appendLog = (text: string) => setLog((prev) => prev + text + '\n');
 
   // === FUNCIONES ===
 
@@ -108,8 +107,6 @@ export default function App() {
       setLoading(false);
     }
   };
-
-
 
   const createTestTable = async () => {
     if (!accessToken) {

@@ -1,18 +1,20 @@
-# 📦 react-native-roble-api-database
+# 📦 roble-client
 
-Paquete para React Native que facilita la comunicación con la plataforma Roble API.
+Cliente JavaScript/TypeScript para la plataforma Roble API.
 https://roble.openlab.uninorte.edu.co/
 
-Este paquete provee una capa ligera para autenticación y operaciones CRUD sobre las bases de datos expuestas por Roble, manteniendo una interfaz simple y adecuada para aplicaciones móviles.
+Este paquete provee una capa ligera para autenticación y operaciones CRUD sobre las bases de datos expuestas por Roble, manteniendo una interfaz simple.
 
-Es el equivalente en TypeScript del paquete Flutter [`roble_api_database`](https://github.com/Arias3/roble_api_database): **ambos exponen exactamente los mismos métodos**, con las mismas excepciones y el mismo comportamiento de refresco de token.
+**Funciona en cualquier entorno JavaScript**: Node.js, navegador, React, React Native, Expo, Vue, Svelte o JavaScript sin framework. No depende de React ni de React Native — su única dependencia es [axios](https://axios-http.com/), que funciona en todos esos entornos. Se distribuye con builds ESM y CommonJS, y con tipos de TypeScript incluidos.
 
-https://github.com/Arias3/roble-api-database-ReNa
+Es el equivalente en TypeScript del paquete Flutter [`roble`](https://github.com/augustosalazar/roble_api_database): **ambos exponen exactamente los mismos métodos**, con las mismas excepciones y el mismo comportamiento de refresco de token.
+
+https://github.com/augustosalazar/roble-api-database-ReNa
 
 ## 🚀 Instalación
 
 ```bash
-npm install react-native-roble-api-database-rena
+npm install roble-client
 ```
 
 Importa el paquete donde lo necesites:
@@ -22,7 +24,13 @@ import {
   createRobleClient,
   RobleApiException,
   RobleApiHttpException,
-} from 'react-native-roble-api-database-rena';
+} from 'roble-client';
+```
+
+En CommonJS (Node.js sin ESM):
+
+```js
+const { createRobleClient } = require('roble-client');
 ```
 
 ---
@@ -180,11 +188,11 @@ try {
 
 ## 📱 Ejemplo completo
 
-El directorio [`example/`](example/) contiene una app Expo que ejercita registro, login, logout, creación de tabla e inserción, y el ciclo CRUD completo.
+El directorio [`example/`](example/) contiene una app Expo que ejercita registro, login, logout, creación de tabla e inserción, y el ciclo CRUD completo. Es solo una de las formas de consumir el paquete: el cliente en sí no depende de React Native.
 
 ```bash
 yarn install
-yarn example start
+cd example && yarn start
 ```
 
 ---

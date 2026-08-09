@@ -1,4 +1,4 @@
-// src/index.tsx
+// src/index.ts
 import axios, {
   type AxiosInstance,
   type AxiosRequestConfig,
