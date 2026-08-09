@@ -2,6 +2,13 @@
 
 ## 2.0.0
 
+### Añadido
+
+- `register()` y `registerWithVerification()` aceptan un `extra` opcional
+  (`Record<string, any>`) con campos adicionales que el backend guarda junto
+  al usuario. Se envía en el campo `extra` del cuerpo, y se omite si no se
+  pasa.
+
 ### Cambios incompatibles
 
 - La configuración se reduce a `{baseUrl, contractId, timeoutMs?}`. Se
@@ -18,7 +25,7 @@ Cobertura completa de la API documentada de ROBLE: de 8 a 19 endpoints.
 
 ### Añadido
 
-- Autenticación: `signupWithVerification()` (`/signup`), `verifyEmail()`,
+- Autenticación: `registerWithVerification()` (`/signup`), `verifyEmail()`,
   `resendCode()`, `currentUser()` (`/verify-token`, el único endpoint que
   devuelve la identidad del usuario), `forgotPassword()`, `resetPassword()` y
   `deleteAccount()`.

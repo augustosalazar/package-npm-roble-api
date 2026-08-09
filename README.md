@@ -122,8 +122,8 @@ db.onTokenUpdate = (token) => persistir(token);
 
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| `register({email, password, name})` | `POST /signup-direct` | Registra un usuario sin verificación por correo. |
-| `signupWithVerification({email, password, name})` | `POST /signup` | Registra y envía un código de 6 dígitos por correo. |
+| `register({email, password, name, extra})` | `POST /signup-direct` | Registra un usuario sin verificación por correo. |
+| `registerWithVerification({email, password, name, extra})` | `POST /signup` | Registra y envía un código de 6 dígitos por correo. |
 | `verifyEmail({email, code})` | `POST /verify-email` | Confirma el correo con el código recibido. |
 | `resendCode({email})` | `POST /resend-code` | Reenvía el código de verificación. |
 | `login({email, password})` | `POST /login` | Inicia sesión y almacena los tokens. |
@@ -132,6 +132,17 @@ db.onTokenUpdate = (token) => persistir(token);
 | `resetPassword({token, newPassword})` | `POST /reset-password` | Restablece la contraseña con el token del correo. |
 | `logout()` | `POST /logout` | Cierra la sesión y limpia los tokens. Lanza `RobleApiAuthException` si no hay sesión. |
 | `deleteAccount()` | `DELETE /account` | Elimina la cuenta permanentemente y limpia la sesión. Irreversible. |
+
+Ambos métodos de registro aceptan un `extra` opcional con campos adicionales que el backend guarda junto al usuario:
+
+```ts
+await db.register({
+  email: 'ana@mail.com',
+  password: 'MiClave!1',
+  name: 'Ana García',
+  extra: { rol: 'admin', programa: 'Ingeniería de Sistemas' },
+});
+```
 
 ### Tablas
 

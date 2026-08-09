@@ -309,17 +309,24 @@ export class RobleApiClient {
   //  AUTH
   // ============================
 
-  /** Registra un usuario sin verificación por correo. */
+  /**
+   * Registra un usuario sin verificación por correo.
+   *
+   * `extra` son campos adicionales opcionales que el backend guarda junto al
+   * usuario; se envían tal cual en el campo `extra` del cuerpo.
+   */
   async register(params: {
     email: string;
     password: string;
     name: string;
+    extra?: Record<string, any>;
   }): Promise<Record<string, any>> {
     return this._makeRequest('auth', 'POST', 'signup-direct', {
       body: {
         email: params.email,
         password: params.password,
         name: params.name,
+        ...(params.extra ? { extra: params.extra } : {}),
       },
       isAuthRequest: true,
     });
@@ -329,17 +336,22 @@ export class RobleApiClient {
    * Registra un usuario y envía un código de verificación por correo.
    *
    * El registro no queda activo hasta llamar a `verifyEmail` con el código.
+   *
+   * `extra` son campos adicionales opcionales que el backend guarda junto al
+   * usuario; se envían tal cual en el campo `extra` del cuerpo.
    */
-  async signupWithVerification(params: {
+  async registerWithVerification(params: {
     email: string;
     password: string;
     name: string;
+    extra?: Record<string, any>;
   }): Promise<Record<string, any>> {
     return this._makeRequest('auth', 'POST', 'signup', {
       body: {
         email: params.email,
         password: params.password,
         name: params.name,
+        ...(params.extra ? { extra: params.extra } : {}),
       },
       isAuthRequest: true,
     });
