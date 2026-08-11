@@ -8,6 +8,6 @@
     "start:cjs": "node index.cjs"
   },
   "dependencies": {
-    "roble-client": "^1.0.0"
+    "roble-client": "^3.0.0"
   }
 }

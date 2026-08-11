@@ -1,13 +1,32 @@
 # Changelog
 
-## 2.0.0
+## 3.0.0
 
 ### Añadido
 
+- **Servicio Realtime** (`db.realtime`): árbol JSON por proyecto con API al
+  estilo Firebase — `ref()`, `child()`, `parent`, `key`, `get({shallow})`,
+  `set()`, `update()`, `push()`, `remove()`, más `collections()` y `health()`.
+  Cubre `GET/PUT/PATCH/POST/DELETE /realtime/{db}/{path}`.
+- **Suscripciones en tiempo real**: `ref.onValue()` y `ref.onEvent()` sobre
+  WebSocket, con `RobleRealtimeEvent`, `status`, `onStatusChange` y `close()`.
+  Un solo socket compartido, resuscripción automática al reconectar y
+  cancelación por colección cuando no quedan escuchas. Añade la dependencia
+  `socket.io-client`.
+- `realtimeBaseUrl` en la configuración: en Roble el servicio de realtime vive
+  en su propio host y el WebSocket solo funciona contra él.
 - `register()` y `registerWithVerification()` aceptan un `extra` opcional
   (`Record<string, any>`) con campos adicionales que el backend guarda junto
   al usuario. Se envía en el campo `extra` del cuerpo, y se omite si no se
   pasa.
+- Los ejemplos (`example/node` y `example/expo`) demuestran Realtime.
+
+### Cambios incompatibles
+
+- `signupWithVerification()` pasa a llamarse `registerWithVerification()`,
+  para leerse en pareja con `register()`.
+
+## 2.0.0
 
 ### Cambios incompatibles
 

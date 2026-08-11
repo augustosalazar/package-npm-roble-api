@@ -19,7 +19,7 @@
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
     "react-native-web": "~0.21.0",
-    "roble-client": "^1.0.0"
+    "roble-client": "^3.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.12",

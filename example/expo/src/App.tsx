@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -18,13 +18,17 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(false);
   const [lastEmail, setLastEmail] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [rtStatus, setRtStatus] = useState<string>('disconnected');
+  const offRealtime = useRef<(() => void) | null>(null);
 
   // === CONFIGURAR CLIENTE ===
   const db = useMemo(
     () =>
       createRobleClient({
-        baseUrl: 'https://roble-api.openlab.uninorte.edu.co',
-        contractId: 'robleapidatabase_e13b5d56c6',
+        baseUrl: 'https://roble-api.test-openlab.uninorte.edu.co',
+        contractId: 'tu_contrato',
+        // El WebSocket de Realtime solo funciona contra el host de realtime.
+        realtimeBaseUrl: 'https://roble-realtime.test-openlab.uninorte.edu.co',
       }),
     []
   );
@@ -185,6 +189,55 @@ export default function App() {
     }
   };
 
+  // === REALTIME ===
+
+  const salaRef = useMemo(() => db.realtime.ref('demo/sala'), [db]);
+
+  const toggleRealtime = () => {
+    if (offRealtime.current) {
+      offRealtime.current();
+      offRealtime.current = null;
+      appendLog('Escucha cancelada.');
+      return;
+    }
+
+    if (!accessToken) {
+      appendLog('Debes iniciar sesión antes de escuchar en tiempo real.');
+      return;
+    }
+
+    db.realtime.onStatusChange = setRtStatus;
+
+    // onValue emite el valor actual y vuelve a emitirlo tras cada cambio.
+    offRealtime.current = salaRef.onValue(
+      (valor) => {
+        const n = valor && typeof valor === 'object' ? Object.keys(valor).length : 0;
+        appendLog(`Realtime: ${n} elemento(s) en ${salaRef.path}`);
+      },
+      { onError: (e) => appendLog(`Error de realtime: ${String(e)}`) }
+    );
+    appendLog(`Escuchando ${salaRef.path}...`);
+  };
+
+  const pushRealtime = async () => {
+    if (!accessToken) {
+      appendLog('Debes iniciar sesión antes de escribir.');
+      return;
+    }
+    try {
+      const id = await salaRef.push({
+        texto: 'Hola desde Expo',
+        timestamp: new Date().toISOString(),
+      });
+      appendLog(`Elemento agregado: ${id}`);
+    } catch (e: any) {
+      appendLog(`Error al agregar: ${e?.message}`);
+    }
+  };
+
+  // Cierra el socket al desmontar la pantalla.
+  useEffect(() => () => db.realtime.close(), [db]);
+
   // === UI ===
   return (
     <View style={styles.container}>
@@ -203,9 +256,16 @@ export default function App() {
         <Button label="Crear tabla de prueba" onPress={createTestTable} />
         <Button label="Agregar dato a tabla" onPress={insertIntoTestTable} />
         <Button label="Probar CRUD" onPress={testCrud} />
+        <Button
+          label={offRealtime.current ? 'Dejar de escuchar' : 'Escuchar realtime'}
+          onPress={toggleRealtime}
+        />
+        <Button label="Agregar a realtime" onPress={pushRealtime} />
       </View>
 
-      <Text style={styles.logTitle}>Log de operaciones:</Text>
+      <Text style={styles.logTitle}>
+        Log de operaciones (realtime: {rtStatus}):
+      </Text>
       <ScrollView
         style={styles.logContainer}
         contentContainerStyle={{ padding: 8 }}

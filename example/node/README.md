@@ -53,12 +53,29 @@ $env:ROBLE_CONTRACT_ID="tu_contrato"; $env:ROBLE_EMAIL="tu@correo.com"; $env:ROB
 | `ROBLE_CONTRACT_ID` | sí | — |
 | `ROBLE_EMAIL` | sí | — |
 | `ROBLE_PASSWORD` | sí | — |
-| `ROBLE_BASE_URL` | no | `https://roble-api.openlab.uninorte.edu.co` |
-| `ROBLE_PROJECT_ID` | no | el valor de `ROBLE_CONTRACT_ID` |
+| `ROBLE_BASE_URL` | no | `https://roble-api.test-openlab.uninorte.edu.co` |
+| `ROBLE_REALTIME_URL` | no | `https://roble-realtime.test-openlab.uninorte.edu.co` |
 | `ROBLE_TABLE` | no | `usuarios_test` |
+| `ROBLE_COLLECTION` | no | `demo` |
 
-La tabla debe existir en tu proyecto. El script inserta un registro, lo lee, lo
-actualiza y lo elimina, así que no deja datos atrás.
+El script inserta un registro, lo lee, lo actualiza y lo elimina, así que no
+deja datos atrás. Si la tabla de `ROBLE_TABLE` no existe, omite la parte de
+CRUD y continúa con la de Realtime.
+
+## Realtime
+
+La segunda mitad del script demuestra el servicio Realtime contra
+`{ROBLE_COLLECTION}/sala`:
+
+- `health()` y `collections()`
+- `onEvent` — el evento crudo (`INSERT`, `UPDATE`, `DELETE`) sin peticiones
+  extra
+- `onValue` — el valor del nodo, al suscribirse y tras cada cambio
+- `push()`, `update()` y `remove()` para provocar los eventos
+- cancelación de las escuchas y `db.realtime.close()`
+
+El WebSocket solo funciona contra el host de realtime, por eso el cliente se
+crea con `realtimeBaseUrl`.
 
 ## Manejo de errores
 

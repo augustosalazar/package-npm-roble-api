@@ -54,6 +54,12 @@ const db = createRobleClient({
 | Crear tabla de prueba | `createTable(tableName, columns)` |
 | Agregar dato a tabla | `create(tableName, data)` |
 | Probar CRUD | `create` → `read` → `update` → `delete` |
+| Escuchar realtime | `ref('demo/sala').onValue(...)` y su cancelación |
+| Agregar a realtime | `ref('demo/sala').push(...)` |
+
+El encabezado del log muestra el estado de la conexión WebSocket
+(`disconnected`, `connecting`, `connected`, `error`) vía
+`db.realtime.onStatusChange`.
 
 Además muestra dos detalles del cliente:
 
