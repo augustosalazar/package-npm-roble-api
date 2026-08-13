@@ -114,6 +114,43 @@ db.onTokenUpdate = (token) => persistir(token);
 
 **Refresco automático:** si una petición de datos responde `401` y hay un `refreshToken` disponible, el cliente renueva el `accessToken` y reintenta la petición **una sola vez**. Esto ocurre de forma interna: no existe un método público para refrescar a mano. Si el refresco falla, lanza `RobleApiAuthException`.
 
+### Mantener la sesión entre reinicios
+
+Sin `storage`, los tokens viven **solo en memoria**: al cerrar la app hay que volver a iniciar sesión. Pásale dónde guardarlos y el cliente se encarga del resto.
+
+```ts
+const db = createRobleClient({
+  baseUrl, contractId,
+  storage: AsyncStorage, // React Native
+});
+
+// Al arrancar, antes de pintar pantallas protegidas:
+if (await db.restoreSession()) {
+  // sesión activa; el access token se renueva solo si hace falta
+}
+```
+
+El cliente guarda la sesión en cada login y refresco, y la borra al cerrar sesión. En el navegador usa `localStorage` automáticamente si no indicas nada.
+
+| Entorno | Qué pasar |
+| --- | --- |
+| Navegador | nada: usa `localStorage` |
+| React Native / Expo | `AsyncStorage`, o `expo-secure-store` |
+| Node / CLI | un envoltorio sobre un fichero JSON |
+| Tests | un `Map` en memoria |
+
+Solo hacen falta tres métodos, así que casi cualquier almacén encaja tal cual:
+
+```ts
+interface RobleStorage {
+  getItem(key: string): string | null | Promise<string | null>;
+  setItem(key: string, value: string): void | Promise<void>;
+  removeItem(key: string): void | Promise<void>;
+}
+```
+
+> 🔐 En móvil usa un almacén seguro (Keychain/Keystore). El refresh token es la credencial de larga duración: con él se obtienen access tokens nuevos sin la contraseña.
+
 ---
 
 ## 📚 Referencia de métodos

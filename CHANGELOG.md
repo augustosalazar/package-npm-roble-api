@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.1.0
+
+### Añadido
+
+- **Persistencia de sesión opcional**: la interfaz `RobleStorage`, el campo
+  `storage` de la configuración y `restoreSession()`. El cliente guarda la
+  sesión en cada login y refresco y la borra al cerrar sesión. En el navegador
+  usa `localStorage` si no se indica nada. Sin `storage`, los tokens siguen
+  viviendo solo en memoria, como hasta ahora.
+
+### Corregido
+
+- Si el servidor rotara el refresh token al refrescar, ahora se conserva en
+  lugar de descartarse. Hoy `/refresh-token` solo devuelve `accessToken`, así
+  que es prevención.
+
 ## 3.0.0
 
 ### Añadido

@@ -152,6 +152,27 @@ export type RobleRealtimeStatus =
 /** Cancela una suscripción. Llamar varias veces es seguro. */
 export type RobleUnsubscribe = () => void;
 
+/**
+ * Almacenamiento donde persistir la sesión entre reinicios.
+ *
+ * `localStorage` del navegador ya cumple esta interfaz. En otros entornos se
+ * envuelve lo que ya use el proyecto, en tres líneas:
+ *
+ * ```ts
+ * // React Native / Expo
+ * { getItem: AsyncStorage.getItem, setItem: AsyncStorage.setItem,
+ *   removeItem: AsyncStorage.removeItem }
+ * ```
+ *
+ * En móvil conviene un almacén seguro (Keychain/Keystore, p. ej.
+ * `expo-secure-store`): el refresh token es la credencial de larga duración.
+ */
+export interface RobleStorage {
+  getItem(key: string): string | null | Promise<string | null>;
+  setItem(key: string, value: string): void | Promise<void>;
+  removeItem(key: string): void | Promise<void>;
+}
+
 /** Usuario autenticado, devuelto por `GET /verify-token`. */
 export interface RobleUser {
   sub: string;
@@ -180,8 +201,31 @@ export interface RobleApiConfig {
    */
   realtimeBaseUrl?: string;
 
+  /**
+   * Dónde persistir la sesión (opcional).
+   *
+   * En el navegador se usa `localStorage` automáticamente si no se indica
+   * nada. En Node, React Native o Flutter hay que pasarlo. Sin almacenamiento
+   * la sesión vive solo en memoria y se pierde al reiniciar.
+   *
+   * Tras configurarlo, llama a `await db.restoreSession()` al arrancar.
+   */
+  storage?: RobleStorage;
+
   /** Timeout en ms (default 30000) */
   timeoutMs?: number;
+}
+
+/** `localStorage` cuando existe; si no, nada. */
+function defaultStorage(): RobleStorage | undefined {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) {
+      return localStorage as RobleStorage;
+    }
+  } catch {
+    // Algunos navegadores lanzan al leer localStorage con cookies bloqueadas.
+  }
+  return undefined;
 }
 
 // ============================
@@ -205,12 +249,17 @@ export class RobleApiClient {
    */
   onTokenUpdate?: (token: string | null) => void;
 
+  private readonly storage?: RobleStorage;
+  private readonly storageKey: string;
+
   constructor(config: RobleApiConfig) {
     this.contractId = config.contractId;
     this.realtimeBaseUrl = (config.realtimeBaseUrl ?? config.baseUrl).replace(
       /\/+$/,
       ''
     );
+    this.storage = config.storage ?? defaultStorage();
+    this.storageKey = `roble.session.${config.contractId}`;
 
     this.http = axios.create({
       baseURL: config.baseUrl.replace(/\/+$/, ''), // sin / final
@@ -257,6 +306,60 @@ export class RobleApiClient {
   private updateAccessToken(token: string | null) {
     this.accessTokenValue = token;
     this.onTokenUpdate?.(token);
+    // Único punto por el que pasan login, refresco, setTokens y clearTokens.
+    void this.persistSession();
+  }
+
+  /**
+   * Restaura la sesión guardada, si la hay.
+   *
+   * Llámalo al arrancar la app, antes de pintar pantallas protegidas.
+   * Devuelve `true` si había una sesión que restaurar.
+   *
+   * ```ts
+   * if (await db.restoreSession()) {
+   *   // sesión activa; el access token se renovará solo si hace falta
+   * }
+   * ```
+   */
+  async restoreSession(): Promise<boolean> {
+    if (!this.storage) return false;
+
+    try {
+      const raw = await this.storage.getItem(this.storageKey);
+      if (!raw) return false;
+
+      const { accessToken, refreshToken } = JSON.parse(raw);
+      if (!accessToken || !refreshToken) return false;
+
+      this.refreshTokenValue = refreshToken;
+      this.updateAccessToken(accessToken);
+      return true;
+    } catch {
+      // Sesión corrupta o almacenamiento no disponible: se empieza de cero.
+      return false;
+    }
+  }
+
+  /** Guarda o borra la sesión. Nunca hace fallar la petición en curso. */
+  private async persistSession(): Promise<void> {
+    if (!this.storage) return;
+
+    try {
+      if (this.accessTokenValue && this.refreshTokenValue) {
+        await this.storage.setItem(
+          this.storageKey,
+          JSON.stringify({
+            accessToken: this.accessTokenValue,
+            refreshToken: this.refreshTokenValue,
+          })
+        );
+      } else {
+        await this.storage.removeItem(this.storageKey);
+      }
+    } catch {
+      // Almacenamiento lleno o sin permisos: la sesión sigue en memoria.
+    }
   }
 
   // ============================
@@ -556,6 +659,10 @@ export class RobleApiClient {
         'Respuesta inválida al refrescar el token.'
       );
     }
+
+    // Hoy el servidor solo devuelve accessToken, pero si algún día rota el
+    // refresh token no hay que perderlo.
+    if (data.refreshToken) this.refreshTokenValue = data.refreshToken;
 
     this.updateAccessToken(data.accessToken);
   }
