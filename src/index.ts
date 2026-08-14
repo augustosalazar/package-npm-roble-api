@@ -173,12 +173,18 @@ export interface RobleStorage {
   removeItem(key: string): void | Promise<void>;
 }
 
-/** Usuario autenticado, devuelto por `GET /verify-token`. */
+/** Perfil del usuario autenticado, devuelto por `GET /me`. */
 export interface RobleUser {
-  sub: string;
+  /** Id del registro de perfil. */
+  id: string;
+  /** Id del usuario. Es con lo que se comparan los campos tipo `autorId`. */
+  userId: string;
   email: string;
-  dbName?: string;
-  sessionId?: string;
+  name: string;
+  /** Campos adicionales enviados al registrarse. `null` si no se usaron. */
+  extra: Record<string, any> | null;
+  createdAt: string;
+  updatedAt: string;
   [key: string]: any;
 }
 
@@ -548,11 +554,31 @@ export class RobleApiClient {
     });
   }
 
-  /** Inicia sesión y almacena los tokens internamente. */
-  async login(params: {
-    email: string;
-    password: string;
-  }): Promise<Record<string, any>> {
+  /**
+   * Inicia sesión y devuelve el perfil del usuario.
+   *
+   * Los tokens se guardan internamente; si los necesitas están en
+   * `accessToken` y `refreshToken`.
+   *
+   * Tras autenticar, pide el perfil a `/me`. Si esa segunda llamada falla, la
+   * sesión **sigue activa**: el error se propaga, pero `accessToken` ya tiene
+   * valor, así que puedes distinguir un fallo de credenciales de uno de perfil
+   * y reintentar con `currentUser()`.
+   *
+   * ```ts
+   * try {
+   *   const user = await db.login({ email, password });
+   * } catch (e) {
+   *   if (db.accessToken) {
+   *     // credenciales correctas, solo falló el perfil
+   *     const user = await db.currentUser();
+   *   } else {
+   *     // credenciales inválidas o problema de red
+   *   }
+   * }
+   * ```
+   */
+  async login(params: { email: string; password: string }): Promise<RobleUser> {
     const data = await this._makeRequest<any>('auth', 'POST', 'login', {
       body: { email: params.email, password: params.password },
       isAuthRequest: true,
@@ -563,7 +589,7 @@ export class RobleApiClient {
       this.updateAccessToken(data.accessToken);
     }
 
-    return data;
+    return this.currentUser();
   }
 
   /** Cierra la sesión en el servidor y descarta los tokens locales. */
@@ -581,20 +607,15 @@ export class RobleApiClient {
   }
 
   /**
-   * Devuelve los datos del usuario autenticado (`sub`, `email`, `dbName`,
-   * `sessionId`). Es el único endpoint que expone la identidad del usuario.
+   * Devuelve el perfil del usuario autenticado: `userId`, `email`, `name`,
+   * el `extra` que se envió al registrarse y las fechas del registro.
    *
-   * Lanza `RobleApiHttpException` con `401` si el token no es válido.
+   * Lanza `RobleApiHttpException` con `401` si no hay sesión válida.
    */
   async currentUser(): Promise<RobleUser> {
-    const res = await this._makeRequest<any>('auth', 'GET', 'verify-token', {
+    return this._makeRequest<RobleUser>('auth', 'GET', 'me', {
       isAuthRequest: true,
     });
-
-    if (res?.user) return res.user as RobleUser;
-    throw new RobleApiFormatException(
-      'Respuesta inesperada al verificar el token.'
-    );
   }
 
   /** Envía un correo con el enlace de restablecimiento de contraseña. */

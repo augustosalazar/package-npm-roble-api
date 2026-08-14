@@ -104,8 +104,9 @@ async function fullFlow() {
   console.log(`Tabla    : ${ROBLE_TABLE}\n`);
 
   console.log('Iniciando sesión...');
-  await db.login({ email: ROBLE_EMAIL, password: ROBLE_PASSWORD });
-  console.log('  sesión iniciada\n');
+  const user = await db.login({ email: ROBLE_EMAIL, password: ROBLE_PASSWORD });
+  console.log(`  sesión iniciada como ${user.name} (${user.userId})`);
+  console.log(`  extra: ${JSON.stringify(user.extra)}\n`);
 
   // El CRUD necesita que la tabla exista; si no, seguimos con Realtime.
   try {

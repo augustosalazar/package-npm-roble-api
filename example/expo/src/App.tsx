@@ -71,13 +71,11 @@ export default function App() {
     try {
       setLoading(true);
       appendLog(`Iniciando sesión con ${lastEmail}...`);
-      const res = await db.login({
+      const user = await db.login({
         email: lastEmail,
         password: 'Password123!',
       });
-      appendLog(
-        `Sesión iniciada. Token: ${String(res.accessToken).substring(0, 25)}...`
-      );
+      appendLog(`Sesión iniciada como ${user.name} (${user.userId})`);
     } catch (e) {
       // Las excepciones tipadas permiten distinguir el tipo de fallo.
       if (e instanceof RobleApiHttpException) {

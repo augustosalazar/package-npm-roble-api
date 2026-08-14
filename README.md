@@ -50,8 +50,12 @@ await db.register({
   name: 'Nombre Usuario',
 });
 
-// Iniciar sesión (guarda los tokens internamente)
-await db.login({ email: 'usuario@email.com', password: 'Password123!' });
+// Iniciar sesión: guarda los tokens y devuelve el perfil
+const user = await db.login({
+  email: 'usuario@email.com',
+  password: 'Password123!',
+});
+console.log(user.name, user.userId, user.extra);
 
 // CREATE
 const nuevo = await db.create('usuarios', { nombre: 'Ana García', edad: 28 });
@@ -163,8 +167,8 @@ interface RobleStorage {
 | `registerWithVerification({email, password, name, extra})` | `POST /signup` | Registra y envía un código de 6 dígitos por correo. |
 | `verifyEmail({email, code})` | `POST /verify-email` | Confirma el correo con el código recibido. |
 | `resendCode({email})` | `POST /resend-code` | Reenvía el código de verificación. |
-| `login({email, password})` | `POST /login` | Inicia sesión y almacena los tokens. |
-| `currentUser()` | `GET /verify-token` | Datos del usuario autenticado (`sub`, `email`, `dbName`, `sessionId`). Único endpoint que expone la identidad. |
+| `login({email, password})` | `POST /login` + `GET /me` | Inicia sesión, almacena los tokens y devuelve el perfil. |
+| `currentUser()` | `GET /me` | Perfil del usuario autenticado: `userId`, `email`, `name`, `extra` y fechas. |
 | `forgotPassword({email})` | `POST /forgot-password` | Envía el correo de restablecimiento. |
 | `resetPassword({token, newPassword})` | `POST /reset-password` | Restablece la contraseña con el token del correo. |
 | `logout()` | `POST /logout` | Cierra la sesión y limpia los tokens. Lanza `RobleApiAuthException` si no hay sesión. |
