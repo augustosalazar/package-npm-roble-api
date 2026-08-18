@@ -4,7 +4,6 @@ import axios, {
   type AxiosRequestConfig,
   type AxiosResponse,
 } from 'axios';
-import { io, type Socket } from 'socket.io-client';
 
 // ============================
 //  Errores
@@ -67,17 +66,34 @@ export class RobleApiAuthException extends RobleApiException {
   }
 }
 
+/**
+ * El servidor aceptó la petición pero rechazó parte de los registros.
+ *
+ * Solo la lanza `createMany(..., { strict: true })`. Conserva el resultado
+ * completo para poder saber **qué sí se escribió**, algo necesario si hay que
+ * deshacer la operación.
+ */
+export class RoblePartialInsertException extends RobleApiException {
+  /** Filas insertadas y rechazadas, tal cual las devolvió el servidor. */
+  readonly result: RobleInsertResult;
+
+  constructor(result: RobleInsertResult) {
+    const total = result.inserted.length + result.skipped.length;
+    const detalle = result.skipped
+      .map((s) => `fila ${s.index} (${s.reason})`)
+      .join('; ');
+    super(
+      `El servidor rechazó ${result.skipped.length} de ${total} registros: ${detalle}`
+    );
+    this.name = 'RoblePartialInsertException';
+    this.result = result;
+  }
+}
+
 // ============================
 //  Configuración
 // ============================
 export type RobleApiHeaders = Record<string, string>;
-
-export interface RobleApiColumn {
-  name: string;
-  type: string;
-  nullable?: boolean;
-  default?: any;
-}
 
 /** Registro que el servidor rechazó durante un `POST /insert`. */
 export interface RobleSkippedRecord {
@@ -110,47 +126,6 @@ export interface RobleQueryResult {
   rows: any[];
   fields: Array<{ name: string; dataTypeID?: number }>;
 }
-
-/** Operación que originó un evento Realtime. */
-export type RobleRealtimeOperation = 'INSERT' | 'UPDATE' | 'DELETE';
-
-/**
- * Cambio recibido por el WebSocket de Realtime.
- *
- * Ojo con la asimetría del servidor: en `INSERT`, `path` apunta al **padre** y
- * el id del nuevo hijo es la clave dentro de `newValue`. En `UPDATE` y
- * `DELETE`, `path` apunta al nodo afectado.
- */
-export interface RobleRealtimeEvent {
-  /** Identificador único del evento. */
-  eventId: string;
-  /** Id de la suscripción que lo originó. */
-  subscriptionId: string;
-  /** Colección (primer segmento de la ruta). */
-  table: string;
-  /** Ruta como lista de segmentos, p. ej. `['messages','general']`. */
-  path: string[];
-  /** Ruta como string, p. ej. `'messages/general'`. */
-  pathString: string;
-  operation: RobleRealtimeOperation;
-  /** Valor anterior. `null` en `INSERT`. */
-  oldValue: any;
-  /**
-   * Valor nuevo. `null` en `DELETE`. En `UPDATE` es **parcial**: solo los
-   * campos enviados, tanto en `PATCH` como en `PUT`.
-   */
-  newValue: any;
-  commitTimestamp: string;
-  /** Payload crudo tal cual lo envió el servidor. */
-  raw: Record<string, any>;
-}
-
-/** Estado de la conexión WebSocket de Realtime. */
-export type RobleRealtimeStatus =
-  'disconnected' | 'connecting' | 'connected' | 'error';
-
-/** Cancela una suscripción. Llamar varias veces es seguro. */
-export type RobleUnsubscribe = () => void;
 
 /**
  * Almacenamiento donde persistir la sesión entre reinicios.
@@ -199,15 +174,6 @@ export interface RobleApiConfig {
   contractId: string;
 
   /**
-   * Host del servicio Realtime, si está desplegado aparte (opcional).
-   *
-   * En despliegues de Roble el realtime suele vivir en su propio host, p. ej.
-   * `https://roble-realtime.test-openlab.uninorte.edu.co`. Si se omite se usa
-   * [baseUrl]. El WebSocket solo funciona contra el host de realtime.
-   */
-  realtimeBaseUrl?: string;
-
-  /**
    * Dónde persistir la sesión (opcional).
    *
    * En el navegador se usa `localStorage` automáticamente si no se indica
@@ -220,6 +186,34 @@ export interface RobleApiConfig {
 
   /** Timeout en ms (default 30000) */
   timeoutMs?: number;
+}
+
+/**
+ * Falla al construir, y no con un 500 críptico en la primera petición.
+ *
+ * @throws Error si `baseUrl` no es una URL o si `contractId` está vacío o
+ * sigue siendo un valor de ejemplo.
+ */
+function validateConfig(config: RobleApiConfig): void {
+  if (!config.baseUrl?.startsWith('http')) {
+    throw new Error(
+      `baseUrl inválida: "${config.baseUrl}". Debe empezar por http:// o https://`
+    );
+  }
+
+  const id = config.contractId?.trim() ?? '';
+  if (!id) {
+    throw new Error(
+      'contractId no puede estar vacío. Es el identificador del proyecto en ' +
+        'la consola de Roble, algo como "miproyecto_ab12cd34ef"'
+    );
+  }
+  if (id === 'tu_contrato' || id === 'mi_contrato' || id.includes(' ')) {
+    throw new Error(
+      `contractId "${config.contractId}" no parece un contrato real. ` +
+        'Cópialo de la consola de Roble'
+    );
+  }
 }
 
 /** `localStorage` cuando existe; si no, nada. */
@@ -243,29 +237,27 @@ export class RobleApiClient {
   /** Identificador del contrato usado en todas las rutas. */
   readonly contractId: string;
   private readonly http: AxiosInstance;
-  /** Host del servicio Realtime (sin barra final). */
-  readonly realtimeBaseUrl: string;
 
-  private accessTokenValue: string | null = null;
-  private refreshTokenValue: string | null = null;
+  // Campos privados de JavaScript: inaccesibles también desde JS, no solo
+  // desde TypeScript.
+  #accessToken: string | null = null;
+  #refreshToken: string | null = null;
 
   /**
-   * Callback opcional invocado cada vez que cambia el access token:
-   * login, refresco automático o logout. Útil para persistir la sesión.
+   * Si la sesión debe sobrevivir al cierre de la app. Lo fija `login` con su
+   * parámetro `persistSession` y afecta también a los refrescos posteriores.
    */
-  onTokenUpdate?: (token: string | null) => void;
+  #persistTokens = true;
 
-  private readonly storage?: RobleStorage;
-  private readonly storageKey: string;
+  readonly #storage?: RobleStorage;
+  readonly #storageKey: string;
 
   constructor(config: RobleApiConfig) {
+    validateConfig(config);
+
     this.contractId = config.contractId;
-    this.realtimeBaseUrl = (config.realtimeBaseUrl ?? config.baseUrl).replace(
-      /\/+$/,
-      ''
-    );
-    this.storage = config.storage ?? defaultStorage();
-    this.storageKey = `roble.session.${config.contractId}`;
+    this.#storage = config.storage ?? defaultStorage();
+    this.#storageKey = `roble.session.${config.contractId}`;
 
     this.http = axios.create({
       baseURL: config.baseUrl.replace(/\/+$/, ''), // sin / final
@@ -276,92 +268,139 @@ export class RobleApiClient {
     // petición lo desactive con `skipAuth` (endpoints públicos).
     this.http.interceptors.request.use((cfg) => {
       cfg.headers = cfg.headers ?? {};
-      if (!(cfg as any).skipAuth && this.accessTokenValue) {
-        (cfg.headers as any).Authorization = `Bearer ${this.accessTokenValue}`;
+      if (!(cfg as any).skipAuth && this.#accessToken) {
+        (cfg.headers as any).Authorization = `Bearer ${this.#accessToken}`;
       }
       return cfg;
     });
   }
 
   // ============================
-  //  Tokens
+  //  Sesión
   // ============================
 
-  /** Access token actual, o `null` si no hay sesión activa. */
-  get accessToken(): string | null {
-    return this.accessTokenValue;
+  /**
+   * `true` si hay una sesión iniciada en este cliente.
+   *
+   * No dice si el servidor la sigue aceptando: para eso está
+   * `restoreSession()`.
+   */
+  get isLoggedIn(): boolean {
+    return this.#accessToken !== null && this.#accessToken !== '';
   }
 
-  /** Refresh token actual, o `null` si no hay sesión activa. */
-  get refreshToken(): string | null {
-    return this.refreshTokenValue;
+  #updateAccessToken(token: string | null) {
+    this.#accessToken = token;
+    // Único punto por el que pasan login, refresco, logout y restauración.
+    void this.#persistSession();
   }
 
-  /** Restaura una sesión previamente persistida. */
-  setTokens(tokens: { accessToken: string; refreshToken: string }) {
-    this.refreshTokenValue = tokens.refreshToken;
-    this.updateAccessToken(tokens.accessToken);
-  }
-
-  /** Descarta la sesión en memoria. */
-  clearTokens() {
-    this.refreshTokenValue = null;
-    this.updateAccessToken(null);
-  }
-
-  private updateAccessToken(token: string | null) {
-    this.accessTokenValue = token;
-    this.onTokenUpdate?.(token);
-    // Único punto por el que pasan login, refresco, setTokens y clearTokens.
-    void this.persistSession();
+  /** Descarta la sesión en memoria y en el almacenamiento. */
+  #clearTokens() {
+    this.#refreshToken = null;
+    this.#updateAccessToken(null);
   }
 
   /**
-   * Restaura la sesión guardada, si la hay.
+   * Restaura la sesión y comprueba que siga siendo válida.
    *
-   * Llámalo al arrancar la app, antes de pintar pantallas protegidas.
-   * Devuelve `true` si había una sesión que restaurar.
+   * Llámalo al arrancar la app, antes de pintar pantallas protegidas:
    *
    * ```ts
    * if (await db.restoreSession()) {
-   *   // sesión activa; el access token se renovará solo si hace falta
+   *   irAlInicio();
+   * } else {
+   *   irAlLogin();
    * }
    * ```
+   *
+   * Carga los tokens del `storage` (si no hay ya una sesión en memoria) y
+   * renueva el access token con el refresh token. Devuelve `true` solo si el
+   * servidor acepta la renovación, así que un `true` significa que la sesión
+   * sirve de verdad, no solo que había tokens guardados.
+   *
+   * Si el refresh token ya no vale, limpia la sesión y devuelve `false`.
+   *
+   * Los fallos de red **no** borran la sesión: se propaga la excepción
+   * (`RobleApiNetworkException`, `RobleApiTimeoutException`) para que la app
+   * pueda distinguir "sesión caducada" de "sin conexión" y reintentar.
+   *
+   * Con `verify: false` solo carga los tokens del almacenamiento, sin llamar
+   * al servidor: más rápido, pero la sesión puede estar caducada.
    */
-  async restoreSession(): Promise<boolean> {
-    if (!this.storage) return false;
+  async restoreSession({
+    verify = true,
+  }: { verify?: boolean } = {}): Promise<boolean> {
+    // 1. Si no hay sesión en memoria, se intenta cargar del almacenamiento.
+    if (!this.#refreshToken) await this.#loadStoredSession();
+    if (!this.#refreshToken) return false;
 
+    // Si la sesión venía del almacén, se sigue persistiendo.
+    this.#persistTokens = true;
+
+    if (!verify) return true;
+
+    // 2. Renovar es la única forma de saber si el refresh token sigue vivo.
     try {
-      const raw = await this.storage.getItem(this.storageKey);
-      if (!raw) return false;
-
-      const { accessToken, refreshToken } = JSON.parse(raw);
-      if (!accessToken || !refreshToken) return false;
-
-      this.refreshTokenValue = refreshToken;
-      this.updateAccessToken(accessToken);
+      await this.#refreshAccessToken();
       return true;
-    } catch {
-      // Sesión corrupta o almacenamiento no disponible: se empieza de cero.
+    } catch (e) {
+      if (
+        e instanceof RobleApiNetworkException ||
+        e instanceof RobleApiTimeoutException
+      ) {
+        throw e;
+      }
+      // Token revocado o caducado: la sesión ya no sirve.
+      this.#clearTokens();
       return false;
     }
   }
 
-  /** Guarda o borra la sesión. Nunca hace fallar la petición en curso. */
-  private async persistSession(): Promise<void> {
-    if (!this.storage) return;
+  /** Borra la sesión guardada sin tocar la que hay en memoria. */
+  async #forgetStoredSession(): Promise<void> {
+    try {
+      await this.#storage?.removeItem(this.#storageKey);
+    } catch {
+      // Almacenamiento no disponible: no hay nada que borrar.
+    }
+  }
+
+  /** Carga los tokens guardados en `storage`, si los hay. */
+  async #loadStoredSession(): Promise<void> {
+    if (!this.#storage) return;
 
     try {
-      if (this.accessTokenValue && this.refreshTokenValue) {
-        await this.storage.setItem(
-          this.storageKey,
+      const raw = await this.#storage.getItem(this.#storageKey);
+      if (!raw) return;
+
+      const { accessToken, refreshToken } = JSON.parse(raw);
+      if (!accessToken || !refreshToken) return;
+
+      this.#refreshToken = refreshToken;
+      this.#updateAccessToken(accessToken);
+    } catch {
+      // Sesión corrupta o almacenamiento no disponible: se empieza de cero.
+    }
+  }
+
+  /** Guarda o borra la sesión. Nunca hace fallar la petición en curso. */
+  async #persistSession(): Promise<void> {
+    if (!this.#storage) return;
+
+    try {
+      if (this.#accessToken && this.#refreshToken) {
+        // Con `persistSession: false` la sesión vive solo en memoria.
+        if (!this.#persistTokens) return;
+        await this.#storage.setItem(
+          this.#storageKey,
           JSON.stringify({
-            accessToken: this.accessTokenValue,
-            refreshToken: this.refreshTokenValue,
+            accessToken: this.#accessToken,
+            refreshToken: this.#refreshToken,
           })
         );
       } else {
-        await this.storage.removeItem(this.storageKey);
+        await this.#storage.removeItem(this.#storageKey);
       }
     } catch {
       // Almacenamiento lleno o sin permisos: la sesión sigue en memoria.
@@ -371,13 +410,7 @@ export class RobleApiClient {
   // ============================
   //  Helpers internos
   // ============================
-  private buildPath(kind: 'auth' | 'database' | 'realtime', endpoint: string) {
-    // El servicio realtime admite rutas vacías (la raíz del proyecto).
-    if (kind === 'realtime') {
-      return endpoint
-        ? `/realtime/${this.contractId}/${endpoint}`
-        : `/realtime/${this.contractId}`;
-    }
+  private buildPath(kind: 'auth' | 'database', endpoint: string) {
     return kind === 'auth'
       ? `/auth/${this.contractId}/${endpoint}`
       : `/database/${this.contractId}/${endpoint}`;
@@ -425,7 +458,7 @@ export class RobleApiClient {
   }
 
   private async _makeRequest<T = any>(
-    kind: 'auth' | 'database' | 'realtime',
+    kind: 'auth' | 'database',
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     endpoint: string,
     {
@@ -433,23 +466,19 @@ export class RobleApiClient {
       query,
       isAuthRequest = false, // true solo para login/refresh/signup/logout
       skipAuth = false, // true para endpoints públicos
-      baseUrlOverride,
     }: {
       body?: any;
       query?: Record<string, any>;
       isAuthRequest?: boolean;
       skipAuth?: boolean;
-      baseUrlOverride?: string;
     } = {}
   ): Promise<T> {
     const cfg: AxiosRequestConfig = {
       url: this.buildPath(kind, endpoint),
-      ...(baseUrlOverride ? { baseURL: baseUrlOverride } : {}),
       method,
       headers: { 'Content-Type': 'application/json' },
       params: query,
-      // Comparar contra undefined, no truthiness: realtime escribe valores
-      // válidos como 0, false o "".
+      // Comparar contra undefined, no truthiness: 0, false y "" son válidos.
       data: body !== undefined ? JSON.stringify(body) : undefined,
       validateStatus: () => true, // manejamos el status manualmente
       ...({ skipAuth } as any),
@@ -465,10 +494,10 @@ export class RobleApiClient {
       res.status === 401 &&
       !isAuthRequest &&
       !skipAuth &&
-      this.refreshTokenValue
+      this.#refreshToken
     ) {
       try {
-        await this.refreshAccessToken();
+        await this.#refreshAccessToken();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         throw new RobleApiAuthException(
@@ -480,7 +509,15 @@ export class RobleApiClient {
       if (res.status >= 200 && res.status < 300) return res.data as T;
     }
 
-    throw new RobleApiHttpException(res.status, this.errorMessage(res));
+    let mensaje = this.errorMessage(res);
+
+    // Un 500 en autenticación es lo que devuelve Roble cuando el contrato no
+    // existe; sin esta pista el mensaje no ayuda nada a diagnosticarlo.
+    if (isAuthRequest && res.status === 500) {
+      mensaje += ` — revisa que el contractId sea correcto (${this.contractId})`;
+    }
+
+    throw new RobleApiHttpException(res.status, mensaje);
   }
 
   // ============================
@@ -498,16 +535,33 @@ export class RobleApiClient {
     password: string;
     name: string;
     extra?: Record<string, any>;
+    autoLogin?: boolean;
+    persistSession?: boolean;
   }): Promise<Record<string, any>> {
-    return this._makeRequest('auth', 'POST', 'signup-direct', {
-      body: {
+    const res = await this._makeRequest<Record<string, any>>(
+      'auth',
+      'POST',
+      'signup-direct',
+      {
+        body: {
+          email: params.email,
+          password: params.password,
+          name: params.name,
+          ...(params.extra ? { extra: params.extra } : {}),
+        },
+        isAuthRequest: true,
+      }
+    );
+
+    if (params.autoLogin) {
+      return this.login({
         email: params.email,
         password: params.password,
-        name: params.name,
-        ...(params.extra ? { extra: params.extra } : {}),
-      },
-      isAuthRequest: true,
-    });
+        persistSession: params.persistSession ?? true,
+      });
+    }
+
+    return res;
   }
 
   /**
@@ -578,15 +632,25 @@ export class RobleApiClient {
    * }
    * ```
    */
-  async login(params: { email: string; password: string }): Promise<RobleUser> {
+  async login(params: {
+    email: string;
+    password: string;
+    persistSession?: boolean;
+  }): Promise<RobleUser> {
+    const persistSession = params.persistSession ?? true;
+
     const data = await this._makeRequest<any>('auth', 'POST', 'login', {
       body: { email: params.email, password: params.password },
       isAuthRequest: true,
     });
 
+    this.#persistTokens = persistSession;
+    // Si esta vez no se quiere recordar la sesión, se borra la anterior.
+    if (!persistSession) await this.#forgetStoredSession();
+
     if (data?.accessToken) {
-      this.refreshTokenValue = data.refreshToken ?? null;
-      this.updateAccessToken(data.accessToken);
+      this.#refreshToken = data.refreshToken ?? null;
+      this.#updateAccessToken(data.accessToken);
     }
 
     return this.currentUser();
@@ -594,7 +658,7 @@ export class RobleApiClient {
 
   /** Cierra la sesión en el servidor y descarta los tokens locales. */
   async logout(): Promise<void> {
-    if (!this.accessTokenValue) {
+    if (!this.#accessToken) {
       throw new RobleApiAuthException(
         'No hay token activo para cerrar sesión.'
       );
@@ -603,7 +667,7 @@ export class RobleApiClient {
     // Sin body: el token viaja en el header Authorization.
     await this._makeRequest('auth', 'POST', 'logout', { isAuthRequest: true });
 
-    this.clearTokens();
+    this.#clearTokens();
   }
 
   /**
@@ -646,7 +710,7 @@ export class RobleApiClient {
    * de llamarla.
    */
   async deleteAccount(): Promise<void> {
-    if (!this.accessTokenValue) {
+    if (!this.#accessToken) {
       throw new RobleApiAuthException(
         'No hay sesión activa para eliminar la cuenta.'
       );
@@ -656,7 +720,7 @@ export class RobleApiClient {
       isAuthRequest: true,
     });
 
-    this.clearTokens();
+    this.#clearTokens();
   }
 
   /**
@@ -665,13 +729,13 @@ export class RobleApiClient {
    * Es interno a propósito: se invoca automáticamente cuando una petición
    * de datos responde `401`. No forma parte de la API pública.
    */
-  private async refreshAccessToken(): Promise<void> {
-    if (!this.refreshTokenValue) {
+  async #refreshAccessToken(): Promise<void> {
+    if (!this.#refreshToken) {
       throw new RobleApiAuthException('No hay refresh token disponible.');
     }
 
     const data = await this._makeRequest<any>('auth', 'POST', 'refresh-token', {
-      body: { refreshToken: this.refreshTokenValue },
+      body: { refreshToken: this.#refreshToken },
       isAuthRequest: true,
     });
 
@@ -683,51 +747,14 @@ export class RobleApiClient {
 
     // Hoy el servidor solo devuelve accessToken, pero si algún día rota el
     // refresh token no hay que perderlo.
-    if (data.refreshToken) this.refreshTokenValue = data.refreshToken;
+    if (data.refreshToken) this.#refreshToken = data.refreshToken;
 
-    this.updateAccessToken(data.accessToken);
+    this.#updateAccessToken(data.accessToken);
   }
 
   // ============================
   //  TABLAS / CRUD
   // ============================
-
-  async createTable(
-    tableName: string,
-    columns: RobleApiColumn[]
-  ): Promise<void> {
-    await this._makeRequest('database', 'POST', 'create-table', {
-      body: {
-        tableName,
-        description: `Tabla ${tableName} creada desde cliente móvil`,
-        columns,
-      },
-    });
-  }
-
-  async getTableData(tableName: string): Promise<any> {
-    return this._makeRequest('database', 'GET', 'table-data', {
-      query: { schema: 'public', table: tableName },
-    });
-  }
-
-  /**
-   * Clona la estructura de columnas de una tabla existente.
-   *
-   * Es el único mecanismo de creación de tablas documentado por la API, y
-   * requiere que `templateTableName` ya exista. No copia los datos.
-   */
-  async createTableFromTemplate(params: {
-    tableName: string;
-    templateTableName: string;
-  }): Promise<Record<string, any>> {
-    return this._makeRequest('database', 'POST', 'create-table-from-template', {
-      body: {
-        tableName: params.tableName,
-        templateTableName: params.templateTableName,
-      },
-    });
-  }
 
   /**
    * Inserta un registro y devuelve la fila creada, con su `_id`.
@@ -764,7 +791,8 @@ export class RobleApiClient {
    */
   async createMany(
     tableName: string,
-    records: Array<Record<string, any>>
+    records: Array<Record<string, any>>,
+    options: { strict?: boolean } = {}
   ): Promise<RobleInsertResult> {
     const res = await this._makeRequest<any>('database', 'POST', 'insert', {
       body: { tableName, records },
@@ -786,7 +814,19 @@ export class RobleApiClient {
         }))
       : [];
 
-    return { inserted, skipped, hasSkipped: skipped.length > 0 };
+    const result: RobleInsertResult = {
+      inserted,
+      skipped,
+      hasSkipped: skipped.length > 0,
+    };
+
+    // Con `strict` el rechazo parcial deja de ser algo que haya que recordar
+    // mirar: se convierte en un error.
+    if (options.strict && result.hasSkipped) {
+      throw new RoblePartialInsertException(result);
+    }
+
+    return result;
   }
 
   async read(
@@ -897,469 +937,20 @@ export class RobleApiClient {
     };
   }
 
-  // ============================
-  //  Realtime
-  // ============================
-
-  private realtimeValue?: RobleRealtime;
-
-  /** Acceso al servicio Realtime: árbol JSON al estilo Firebase. */
-  get realtime(): RobleRealtime {
-    return (this.realtimeValue ??= new RobleRealtime(this));
-  }
-
-  /** @internal Usado por RobleRealtime. `/realtime/health` no lleva proyecto. */
-  async _realtimeHealth(): Promise<Record<string, any>> {
-    const res = await this.send({
-      url: '/realtime/health',
-      baseURL: this.realtimeBaseUrl,
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      validateStatus: () => true,
-      ...({ skipAuth: true } as any),
-    });
-
-    if (res.status >= 200 && res.status < 300) return res.data;
-    throw new RobleApiHttpException(res.status, this.errorMessage(res));
-  }
-
-  /** @internal Usado por RobleRealtime. */
-  async _realtimeRequest<T = any>(
-    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
-    path: string,
-    options: {
-      body?: any;
-      query?: Record<string, any>;
-      skipAuth?: boolean;
-    } = {}
-  ): Promise<T> {
-    return this._makeRequest<T>('realtime', method, path, {
-      ...options,
-      baseUrlOverride: this.realtimeBaseUrl,
-    });
-  }
-
-  // ============================
-  //  Conveniencia (helpers)
-  // ============================
-  async getAll(tableName: string) {
-    return this.read(tableName);
-  }
-
-  async getById(tableName: string, id: string | number) {
-    const rows = await this.read(tableName, { _id: id });
-    return rows.length ? rows[0] : null;
-  }
-
-  async getWhere(tableName: string, column: string, value: any) {
-    return this.read(tableName, { [column]: value });
-  }
-}
-
-// ============================
-//  Realtime
-// ============================
-
-function normalizePath(path: string): string {
-  return path
-    .split('/')
-    .filter((s) => s.length > 0)
-    .join('/');
-}
-
-/**
- * Punto de entrada al servicio Realtime de Roble: un árbol JSON por proyecto,
- * con una API al estilo de Firebase Realtime Database.
- *
- * ```ts
- * const mensajes = db.realtime.ref('messages/general');
- * const id = await mensajes.push({ texto: 'Hola' });
- * await mensajes.child(id).update({ status: 'read' });
- * const datos = await mensajes.get();
- * ```
- */
-/** Una escucha registrada sobre una ruta. */
-interface RealtimeListener {
-  segments: string[];
-  collection: string;
-  ref: RobleRealtimeRef;
-  onEvent?: (event: RobleRealtimeEvent) => void;
-  onValue?: (value: any) => void;
-  onError?: (error: unknown) => void;
-}
-
-/** ¿Una ruta es prefijo de la otra? Cubre ancestros y descendientes. */
-function pathsOverlap(a: string[], b: string[]): boolean {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-export class RobleRealtime {
-  private socket: Socket | null = null;
-  private readonly listeners = new Set<RealtimeListener>();
-  /** colección -> subscriptionId devuelto por el servidor. */
-  private readonly subscriptions = new Map<string, string>();
-  private statusValue: RobleRealtimeStatus = 'disconnected';
-
-  /** Se invoca en cada cambio de estado de la conexión. */
-  onStatusChange?: (status: RobleRealtimeStatus) => void;
-
-  constructor(private readonly client: RobleApiClient) {}
-
-  /** Estado actual de la conexión WebSocket. */
-  get status(): RobleRealtimeStatus {
-    return this.statusValue;
-  }
-
   /**
-   * Referencia a una ruta del árbol. El primer segmento es la colección.
-   * Sin argumentos apunta a la raíz del proyecto.
-   */
-  ref(path: string = ''): RobleRealtimeRef {
-    return new RobleRealtimeRef(this.client, normalizePath(path), this);
-  }
-
-  /**
-   * Cierra el WebSocket y cancela todas las escuchas.
-   *
-   * El socket se vuelve a abrir solo si se registra una escucha nueva.
-   */
-  close(): void {
-    this.listeners.clear();
-    this.subscriptions.clear();
-    this.socket?.close();
-    this.socket = null;
-    this.setStatus('disconnected');
-  }
-
-  // ---- internos ----
-
-  private setStatus(status: RobleRealtimeStatus) {
-    if (this.statusValue === status) return;
-    this.statusValue = status;
-    this.onStatusChange?.(status);
-  }
-
-  private query() {
-    return {
-      token: this.client.accessToken ?? '',
-      dbName: this.client.contractId,
-    };
-  }
-
-  private ensureSocket(): Socket {
-    if (this.socket) return this.socket;
-
-    if (!this.client.accessToken) {
-      throw new RobleApiAuthException(
-        'No hay sesión activa para abrir el WebSocket de Realtime.'
-      );
-    }
-
-    const wsUrl =
-      this.client.realtimeBaseUrl.replace(/^http/, 'ws') + '/stream';
-    this.setStatus('connecting');
-
-    const socket = io(wsUrl, {
-      transports: ['websocket'],
-      query: this.query(),
-    });
-
-    socket.on('connect', () => {
-      this.setStatus('connected');
-      // Al reconectar hay que rehacer todas las suscripciones.
-      this.subscriptions.clear();
-      for (const collection of this.activeCollections()) {
-        this.subscribeCollection(collection);
-      }
-    });
-
-    socket.on('disconnect', () => {
-      this.subscriptions.clear();
-      this.setStatus('disconnected');
-    });
-
-    socket.on('connect_error', () => this.setStatus('error'));
-
-    socket.on('data_change', (payload: any) => {
-      for (const raw of Array.isArray(payload) ? payload : [payload]) {
-        this.dispatch(raw);
-      }
-    });
-
-    // El token puede haber cambiado desde la última conexión.
-    socket.io.on('reconnect_attempt', () => {
-      socket.io.opts.query = this.query();
-    });
-
-    this.socket = socket;
-    return socket;
-  }
-
-  private activeCollections(): Set<string> {
-    const set = new Set<string>();
-    for (const l of this.listeners) if (l.collection) set.add(l.collection);
-    return set;
-  }
-
-  private subscribeCollection(collection: string) {
-    const socket = this.socket;
-    if (!socket?.connected || this.subscriptions.has(collection)) return;
-
-    socket.emit(
-      'subscribe',
-      {
-        type: 'subscribe',
-        requestId: `${collection}-${Date.now()}`,
-        table: collection,
-        events: ['INSERT', 'UPDATE', 'DELETE'],
-      },
-      (ack: any) => {
-        if (ack?.subscriptionId) {
-          this.subscriptions.set(collection, ack.subscriptionId);
-        }
-      }
-    );
-  }
-
-  private unsubscribeCollection(collection: string) {
-    const subscriptionId = this.subscriptions.get(collection);
-    if (!subscriptionId) return;
-    this.subscriptions.delete(collection);
-    this.socket?.emit('unsubscribe', { type: 'unsubscribe', subscriptionId });
-  }
-
-  private dispatch(raw: any) {
-    if (!raw || typeof raw !== 'object') return;
-
-    const path: string[] = Array.isArray(raw.path) ? raw.path.map(String) : [];
-    const event: RobleRealtimeEvent = {
-      eventId: String(raw.eventId ?? ''),
-      subscriptionId: String(raw.subscriptionId ?? ''),
-      table: String(raw.table ?? path[0] ?? ''),
-      path,
-      pathString: path.join('/'),
-      operation: raw.operation,
-      oldValue: raw.old ?? null,
-      newValue: raw.new ?? null,
-      commitTimestamp: String(raw.commitTimestamp ?? ''),
-      raw,
-    };
-
-    for (const l of this.listeners) {
-      if (l.collection !== event.table) continue;
-      if (!pathsOverlap(l.segments, path)) continue;
-
-      if (l.onEvent) {
-        try {
-          l.onEvent(event);
-        } catch (e) {
-          l.onError?.(e);
-        }
-      }
-
-      if (l.onValue) void this.emitValue(l);
-    }
-  }
-
-  private async emitValue(l: RealtimeListener) {
-    // `new` es parcial y no distingue PATCH de PUT, así que releemos el nodo.
-    try {
-      l.onValue?.(await l.ref.get());
-    } catch (e) {
-      l.onError?.(e);
-    }
-  }
-
-  /** @internal Registra una escucha y devuelve su cancelación. */
-  _addListener(listener: RealtimeListener): RobleUnsubscribe {
-    this.listeners.add(listener);
-    this.ensureSocket();
-    this.subscribeCollection(listener.collection);
-
-    if (listener.onValue) void this.emitValue(listener);
-
-    let cancelled = false;
-    return () => {
-      if (cancelled) return;
-      cancelled = true;
-      this.listeners.delete(listener);
-
-      // Si ya nadie escucha esa colección, se cancela en el servidor.
-      const stillUsed = [...this.listeners].some(
-        (l) => l.collection === listener.collection
-      );
-      if (!stillUsed) this.unsubscribeCollection(listener.collection);
-    };
-  }
-
-  /** Nombres de las colecciones del proyecto. */
-  async collections(): Promise<string[]> {
-    const res = await this.client._realtimeRequest<any>('GET', '');
-    return Array.isArray(res) ? res.map(String) : [];
-  }
-
-  /**
-   * Estado del servicio Realtime (PostgreSQL, event bus y CDC).
-   * No requiere autenticación y no depende del proyecto.
-   */
-  async health(): Promise<Record<string, any>> {
-    return this.client._realtimeHealth();
-  }
-}
-
-/**
- * Referencia a una ruta concreta del árbol Realtime.
- * Es inmutable: `child()` devuelve una referencia nueva.
- */
-export class RobleRealtimeRef {
-  constructor(
-    private readonly client: RobleApiClient,
-    /** Ruta normalizada, sin barras iniciales ni finales. Vacía en la raíz. */
-    readonly path: string,
-    private readonly realtime?: RobleRealtime
-  ) {}
-
-  private get segments(): string[] {
-    return this.path ? this.path.split('/') : [];
-  }
-
-  private requireRealtime(): RobleRealtime {
-    if (!this.realtime) {
-      throw new RobleApiException(
-        'Esta referencia no está asociada al servicio Realtime.'
-      );
-    }
-    if (!this.path) {
-      throw new RobleApiException(
-        'No se puede escuchar la raíz del proyecto: indica al menos la colección.'
-      );
-    }
-    return this.realtime;
-  }
-
-  /**
-   * Escucha los cambios en esta ruta y en sus descendientes.
-   *
-   * Entrega el evento crudo del servidor, sin releer nada. Devuelve la función
-   * para cancelar la escucha.
+   * Devuelve el registro con ese `_id`, o `null` si no existe.
    *
    * ```ts
-   * const off = db.realtime.ref('messages/general').onEvent((e) => {
-   *   console.log(e.operation, e.pathString, e.newValue);
-   * });
-   * off();
+   * const usuario = await db.getById('usuarios', 'customid1234');
+   * if (!usuario) mostrarNoEncontrado();
    * ```
    */
-  onEvent(
-    listener: (event: RobleRealtimeEvent) => void,
-    options: { onError?: (error: unknown) => void } = {}
-  ): RobleUnsubscribe {
-    const rt = this.requireRealtime();
-    return rt._addListener({
-      segments: this.segments,
-      collection: this.segments[0]!,
-      ref: this,
-      onEvent: listener,
-      onError: options.onError,
-    });
-  }
-
-  /**
-   * Escucha el valor de esta ruta, al estilo `onValue` de Firebase.
-   *
-   * Emite el valor actual al suscribirse y vuelve a emitirlo tras cada cambio.
-   * Relee el nodo por REST en cada evento porque el `new` del servidor es
-   * parcial y no distingue `PATCH` de `PUT`.
-   */
-  onValue(
-    listener: (value: any) => void,
-    options: { onError?: (error: unknown) => void } = {}
-  ): RobleUnsubscribe {
-    const rt = this.requireRealtime();
-    return rt._addListener({
-      segments: this.segments,
-      collection: this.segments[0]!,
-      ref: this,
-      onValue: listener,
-      onError: options.onError,
-    });
-  }
-
-  /** Nombre del último segmento, o `null` en la raíz. */
-  get key(): string | null {
-    if (!this.path) return null;
-    const segments = this.path.split('/');
-    return segments[segments.length - 1] ?? null;
-  }
-
-  /** Referencia al hijo indicado. Admite rutas con varios segmentos. */
-  child(childPath: string): RobleRealtimeRef {
-    const sub = normalizePath(childPath);
-    if (!sub) return this;
-    return new RobleRealtimeRef(
-      this.client,
-      this.path ? `${this.path}/${sub}` : sub,
-      this.realtime
-    );
-  }
-
-  /** Referencia al padre, o `null` si ya es la raíz. */
-  get parent(): RobleRealtimeRef | null {
-    if (!this.path) return null;
-    const segments = this.path.split('/');
-    segments.pop();
-    return new RobleRealtimeRef(this.client, segments.join('/'), this.realtime);
-  }
-
-  /**
-   * Lee el valor JSON en esta ruta.
-   *
-   * Con `shallow` en `true` devuelve solo las claves inmediatas: las hojas
-   * conservan su valor y los hijos objeto/array se marcan con `$$kind`.
-   */
-  async get(options: { shallow?: boolean } = {}): Promise<any> {
-    return this.client._realtimeRequest('GET', this.path, {
-      query: options.shallow ? { shallow: 'true' } : undefined,
-    });
-  }
-
-  /** Sobrescribe el valor en esta ruta. Crea la colección si no existe. */
-  async set(value: any): Promise<any> {
-    return this.client._realtimeRequest('PUT', this.path, { body: value });
-  }
-
-  /** Fusiona los campos indicados con el objeto existente en esta ruta. */
-  async update(fields: Record<string, any>): Promise<Record<string, any>> {
-    return this.client._realtimeRequest('PATCH', this.path, { body: fields });
-  }
-
-  /**
-   * Agrega un hijo con ID autogenerado, como `push()` de Firebase.
-   * Devuelve el ID generado.
-   */
-  async push(value: any): Promise<string> {
-    const res = await this.client._realtimeRequest<any>('POST', this.path, {
-      body: value,
-    });
-
-    if (res?.name) return String(res.name);
-    throw new RobleApiFormatException(
-      'El servidor no devolvió el ID generado.'
-    );
-  }
-
-  /**
-   * Elimina el valor en esta ruta. Si la ruta es solo la colección, la
-   * elimina completa.
-   */
-  async remove(): Promise<void> {
-    await this.client._realtimeRequest('DELETE', this.path);
-  }
-
-  toString(): string {
-    return `RobleRealtimeRef(/${this.path})`;
+  async getById(
+    tableName: string,
+    id: string | number
+  ): Promise<Record<string, any> | null> {
+    const rows = await this.read(tableName, { _id: id });
+    return rows.length ? rows[0]! : null;
   }
 }
 

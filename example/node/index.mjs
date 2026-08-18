@@ -3,7 +3,7 @@
 //   npm start
 //
 // Sin credenciales hace una comprobación offline. Con credenciales ejecuta el
-// ciclo CRUD completo y una demo de Realtime con suscripción en vivo.
+// ciclo completo: registro, login, CRUD e inserción múltiple.
 import {
   createRobleClient,
   RobleApiAuthException,
@@ -11,146 +11,112 @@ import {
   RobleApiHttpException,
   RobleApiNetworkException,
   RobleApiTimeoutException,
+  RoblePartialInsertException,
 } from 'roble-client';
 
 const {
   ROBLE_BASE_URL = 'https://roble-api.test-openlab.uninorte.edu.co',
-  ROBLE_REALTIME_URL = 'https://roble-realtime.test-openlab.uninorte.edu.co',
   ROBLE_CONTRACT_ID,
   ROBLE_EMAIL,
   ROBLE_PASSWORD,
   ROBLE_TABLE = 'usuarios_test',
-  ROBLE_COLLECTION = 'demo',
 } = process.env;
-
-const db = createRobleClient({
-  baseUrl: ROBLE_BASE_URL,
-  contractId: ROBLE_CONTRACT_ID ?? 'mi_contrato',
-  // El WebSocket de Realtime solo funciona contra el host de realtime.
-  realtimeBaseUrl: ROBLE_REALTIME_URL,
-});
-
-// El cliente avisa cada vez que cambia el access token.
-db.onTokenUpdate = (token) =>
-  console.log(`  [token] ${token ? `${token.slice(0, 20)}...` : 'null'}`);
 
 function offlineCheck() {
   console.log('Sin credenciales: comprobación offline.\n');
-  console.log('  cliente creado  :', db.constructor.name);
-  console.log('  accessToken     :', db.accessToken);
-  console.log('  refreshToken    :', db.refreshToken);
 
   const err = new RobleApiHttpException(401, 'No autorizado');
   console.log('  excepciones     :', `${err.name} (${err.statusCode})`);
   console.log('  hereda de Error :', err instanceof Error);
 
+  // La configuración se valida al construir el cliente.
+  try {
+    createRobleClient({ baseUrl: ROBLE_BASE_URL, contractId: 'tu_contrato' });
+  } catch (e) {
+    console.log('  contrato sin configurar ->', e.message);
+  }
+
   console.log('\nPara ejecutar el ciclo completo, define las variables:');
   console.log('  ROBLE_CONTRACT_ID, ROBLE_EMAIL, ROBLE_PASSWORD');
-  console.log(
-    '  (opcionales: ROBLE_BASE_URL, ROBLE_REALTIME_URL, ROBLE_TABLE, ROBLE_COLLECTION)'
-  );
-}
-
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function realtimeDemo() {
-  console.log('\n=== Realtime ===\n');
-
-  const health = await db.realtime.health();
-  console.log('Estado del servicio :', health.status);
-  console.log('Colecciones         :', await db.realtime.collections());
-
-  const ref = db.realtime.ref(`${ROBLE_COLLECTION}/sala`);
-  console.log(`Escuchando          : ${ref.path}\n`);
-
-  db.realtime.onStatusChange = (s) => console.log(`  [conexión] ${s}`);
-
-  // Evento crudo: no hace ninguna petición extra.
-  const offEvent = ref.onEvent((e) => {
-    console.log(`  [evento] ${e.operation} ${e.pathString} -> ${JSON.stringify(e.newValue)}`);
-  });
-
-  // Valor del nodo: emite al suscribirse y tras cada cambio.
-  const offValue = ref.onValue((valor) => {
-    const n = valor && typeof valor === 'object' ? Object.keys(valor).length : 0;
-    console.log(`  [valor ] ${n} elemento(s): ${JSON.stringify(valor)}`);
-  });
-
-  await wait(2500);
-
-  console.log('\n-> push');
-  const id = await ref.push({ texto: 'hola', autor: 'node' });
-  await wait(2500);
-
-  console.log('-> update (fusiona)');
-  await ref.child(id).update({ leido: true });
-  await wait(2500);
-
-  console.log('-> remove');
-  await ref.child(id).remove();
-  await wait(2500);
-
-  console.log('\nCancelando escuchas…');
-  offEvent();
-  offValue();
-
-  await ref.remove();
-  db.realtime.close();
-  console.log('Listo. Socket cerrado.');
+  console.log('  (opcionales: ROBLE_BASE_URL, ROBLE_TABLE)');
 }
 
 async function fullFlow() {
+  const db = createRobleClient({
+    baseUrl: ROBLE_BASE_URL,
+    contractId: ROBLE_CONTRACT_ID,
+    // En Node no hay almacén por defecto: sin `storage` la sesión vive en RAM.
+  });
+
   console.log(`Contrato : ${ROBLE_CONTRACT_ID}`);
   console.log(`Tabla    : ${ROBLE_TABLE}\n`);
 
   console.log('Iniciando sesión...');
   const user = await db.login({ email: ROBLE_EMAIL, password: ROBLE_PASSWORD });
-  console.log(`  sesión iniciada como ${user.name} (${user.userId})`);
-  console.log(`  extra: ${JSON.stringify(user.extra)}\n`);
+  console.log(`  dentro como ${user.name} (${user.userId})`);
+  console.log(`  extra: ${JSON.stringify(user.extra)}`);
+  console.log(`  isLoggedIn: ${db.isLoggedIn}\n`);
 
-  // El CRUD necesita que la tabla exista; si no, seguimos con Realtime.
   try {
-    await crudDemo();
+    await crudDemo(db);
+    await insertDemo(db);
   } catch (e) {
-    console.log(`\n(CRUD omitido: ${e.message})`);
-    console.log('Crea la tabla o define ROBLE_TABLE para probar esta parte.');
+    console.log(`\n(datos omitidos: ${e.message})`);
+    console.log(`Crea la tabla "${ROBLE_TABLE}" o define ROBLE_TABLE.`);
   }
-
-  await realtimeDemo();
 
   console.log('\nCerrando sesión...');
   await db.logout();
-  console.log('  sesión cerrada');
+  console.log(`  isLoggedIn: ${db.isLoggedIn}`);
 }
 
-async function crudDemo() {
+async function crudDemo(db) {
   console.log('=== CRUD ===\n');
-  console.log('Creando registro...');
-  const creado = await db.create(ROBLE_TABLE, { nombre: 'Node', rol: 'demo' });
-  console.log('  creado:', JSON.stringify(creado), '\n');
 
-  console.log('Leyendo registros...');
-  const filas = await db.read(ROBLE_TABLE);
-  console.log(`  ${filas.length} registros\n`);
+  const creado = await db.create(ROBLE_TABLE, { nombre: 'Ana', rol: 'admin' });
+  console.log('  creado   :', creado._id);
 
-  console.log('Actualizando registro...');
-  await db.update(ROBLE_TABLE, creado._id, { rol: 'actualizado' });
-  console.log('  actualizado\n');
+  const todos = await db.read(ROBLE_TABLE);
+  console.log('  leídos   :', todos.length, 'registros');
 
-  console.log('Eliminando registro...');
+  await db.update(ROBLE_TABLE, creado._id, { rol: 'editor' });
+  const uno = await db.getById(ROBLE_TABLE, creado._id);
+  console.log('  getById  :', uno?.rol);
+
   await db.delete(ROBLE_TABLE, creado._id);
   console.log('  eliminado');
 }
 
-async function main() {
-  if (!ROBLE_CONTRACT_ID || !ROBLE_EMAIL || !ROBLE_PASSWORD) {
-    offlineCheck();
-    return;
+async function insertDemo(db) {
+  console.log('\n=== Inserción múltiple ===\n');
+
+  // strict convierte el rechazo parcial en un error, en vez de algo que hay
+  // que acordarse de comprobar.
+  try {
+    await db.createMany(
+      ROBLE_TABLE,
+      [{ nombre: 'Uno' }, { columna_inexistente: 1 }],
+      { strict: true }
+    );
+  } catch (e) {
+    if (e instanceof RoblePartialInsertException) {
+      console.log('  rechazo parcial:', e.message);
+      console.log('  sí se escribió :', e.result.inserted.length, 'fila(s)');
+      for (const fila of e.result.inserted) {
+        await db.delete(ROBLE_TABLE, fila._id);
+      }
+      console.log('  (limpiadas)');
+    } else {
+      throw e;
+    }
   }
-  await fullFlow();
 }
 
-// Cada tipo de fallo se distingue por su clase, igual que en el paquete Flutter.
+const main =
+  ROBLE_CONTRACT_ID && ROBLE_EMAIL && ROBLE_PASSWORD
+    ? fullFlow
+    : async () => offlineCheck();
+
 main().catch((e) => {
   if (e instanceof RobleApiHttpException) {
     console.error(`\nEl servidor respondió ${e.statusCode}: ${e.message}`);

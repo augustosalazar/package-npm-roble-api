@@ -7,7 +7,9 @@ Este paquete provee una capa ligera para autenticación y operaciones CRUD sobre
 
 **Funciona en cualquier entorno JavaScript**: Node.js, navegador, React, React Native, Expo, Vue, Svelte o JavaScript sin framework. No depende de React ni de React Native — su única dependencia es [axios](https://axios-http.com/), que funciona en todos esos entornos. Se distribuye con builds ESM y CommonJS, y con tipos de TypeScript incluidos.
 
-Es el equivalente en TypeScript del paquete Flutter [`roble`](https://github.com/augustosalazar/roble_api_database): **ambos exponen exactamente los mismos métodos**, con las mismas excepciones y el mismo comportamiento de refresco de token.
+Es el equivalente en TypeScript del paquete Flutter [`roble`](https://github.com/augustosalazar/roble_api_database): **ambos exponen los mismos métodos**, con las mismas excepciones y el mismo comportamiento de refresco de token.
+
+La única diferencia es el almacenamiento de la sesión: Flutter usa el almacén seguro del sistema por defecto, mientras que aquí solo hay uno automático en el navegador (`localStorage`). En Node y React Native hay que pasar un `storage`.
 
 https://github.com/augustosalazar/roble-api-database-ReNa
 
@@ -96,27 +98,25 @@ const db = createRobleClient({
 Eso es toda la configuración. `Content-Type: application/json` y
 `Authorization: Bearer …` los gestiona el cliente por su cuenta.
 
----
+`createRobleClient` **valida sus argumentos y lanza `Error`** si `baseUrl` no es una URL o si el `contractId` está vacío o sigue siendo un valor de ejemplo. Antes eso se manifestaba como un `500` incomprensible en la primera petición.
 
-## 🔐 Manejo de tokens
+Además, un `500` en autenticación es lo que devuelve Roble cuando el contrato no existe, así que a ese mensaje se le añade una pista:
 
-Tras un `login()` exitoso el cliente guarda el `accessToken` y el `refreshToken`, y los adjunta como `Authorization: Bearer …` en las peticiones siguientes.
-
-```ts
-db.accessToken;  // string | null
-db.refreshToken; // string | null
-
-// Restaurar una sesión persistida
-db.setTokens({ accessToken, refreshToken });
-
-// Descartar la sesión en memoria
-db.clearTokens();
-
-// Reaccionar a cada cambio del access token
-db.onTokenUpdate = (token) => persistir(token);
+```
+Error inesperado al autenticar — revisa que el contractId sea correcto (mi_contrato_mal)
 ```
 
-**Refresco automático:** si una petición de datos responde `401` y hay un `refreshToken` disponible, el cliente renueva el `accessToken` y reintenta la petición **una sola vez**. Esto ocurre de forma interna: no existe un método público para refrescar a mano. Si el refresco falla, lanza `RobleApiAuthException`.
+---
+
+## 🔐 Sesión
+
+Los tokens **no se exponen**. El cliente los guarda, los adjunta a cada petición, los renueva ante un `401` y los borra al cerrar sesión. Lo único que se consulta desde fuera es:
+
+```ts
+db.isLoggedIn; // boolean
+```
+
+**Refresco automático:** si una petición responde `401` y hay refresh token, el cliente renueva el access token y reintenta **una sola vez**. Es interno: no hay método público para refrescar a mano. Si el refresco falla, lanza `RobleApiAuthException`.
 
 ### Mantener la sesión entre reinicios
 
@@ -130,11 +130,27 @@ const db = createRobleClient({
 
 // Al arrancar, antes de pintar pantallas protegidas:
 if (await db.restoreSession()) {
-  // sesión activa; el access token se renueva solo si hace falta
+  irAlInicio();
+} else {
+  irAlLogin();
 }
 ```
 
 El cliente guarda la sesión en cada login y refresco, y la borra al cerrar sesión. En el navegador usa `localStorage` automáticamente si no indicas nada.
+
+`restoreSession()` no se limita a leer los tokens guardados: **renueva el access token contra el servidor**, así que un `true` significa que la sesión sirve de verdad. Si el refresh token ya caducó o fue revocado, limpia la sesión y devuelve `false`.
+
+Los fallos de red no borran la sesión: se propaga la excepción para que puedas distinguir "sesión caducada" de "sin conexión".
+
+```ts
+try {
+  (await db.restoreSession()) ? irAlInicio() : irAlLogin();
+} catch (e) {
+  if (e instanceof RobleApiNetworkException) mostrarPantallaSinConexion();
+}
+```
+
+Con `restoreSession({ verify: false })` solo se cargan los tokens del almacenamiento, sin llamar al servidor: arranca más rápido, pero la sesión puede estar caducada.
 
 | Entorno | Qué pasar |
 | --- | --- |
@@ -163,11 +179,12 @@ interface RobleStorage {
 
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| `register({email, password, name, extra})` | `POST /signup-direct` | Registra un usuario sin verificación por correo. |
+| `register({email, password, name, extra, autoLogin, persistSession})` | `POST /signup-direct` | Registra un usuario. Con `autoLogin: true` inicia sesión y devuelve el perfil. |
 | `registerWithVerification({email, password, name, extra})` | `POST /signup` | Registra y envía un código de 6 dígitos por correo. |
 | `verifyEmail({email, code})` | `POST /verify-email` | Confirma el correo con el código recibido. |
 | `resendCode({email})` | `POST /resend-code` | Reenvía el código de verificación. |
-| `login({email, password})` | `POST /login` + `GET /me` | Inicia sesión, almacena los tokens y devuelve el perfil. |
+| `login({email, password, persistSession})` | `POST /login` + `GET /me` | Inicia sesión y devuelve el perfil. Con `persistSession: false` la sesión vive solo en memoria. |
+| `isLoggedIn` | — | `true` si hay sesión iniciada en este cliente. |
 | `currentUser()` | `GET /me` | Perfil del usuario autenticado: `userId`, `email`, `name`, `extra` y fechas. |
 | `forgotPassword({email})` | `POST /forgot-password` | Envía el correo de restablecimiento. |
 | `resetPassword({token, newPassword})` | `POST /reset-password` | Restablece la contraseña con el token del correo. |
@@ -185,27 +202,31 @@ await db.register({
 });
 ```
 
-### Tablas
-
-| Método | Endpoint | Descripción |
-| --- | --- | --- |
-| `createTable(tableName, columns)` | `POST /create-table` | Crea una tabla. Cada columna es `{name, type, nullable?, default?}`. ⚠️ Endpoint no documentado por la API. |
-| `createTableFromTemplate({tableName, templateTableName})` | `POST /create-table-from-template` | Clona la estructura de columnas de una tabla existente. Único mecanismo documentado para crear tablas. |
-| `getTableData(tableName)` | `GET /table-data` | Datos de la tabla en el esquema `public`. ⚠️ Endpoint no documentado por la API. |
-
 ### CRUD
 
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
 | `create(tableName, data)` | `POST /insert-one` | Inserta un registro y devuelve la fila creada, con su `_id`. |
-| `createMany(tableName, records)` | `POST /insert` | Inserta varios registros. Devuelve `RobleInsertResult` con `inserted` y `skipped`. |
+| `createMany(tableName, records, {strict})` | `POST /insert` | Inserta varios registros. Devuelve `RobleInsertResult`. Con `strict: true` lanza `RoblePartialInsertException` si hay rechazos. |
 | `read(tableName, filters?)` | `GET /read` | Lee registros; cada filtro viaja como query param. Solo igualdad. |
 | `publicRead(tableName, filters?)` | `GET /public-read` | Lee una tabla pública **sin autenticación**. Un `403` indica que la tabla no está marcada como pública. |
 | `update(tableName, id, data)` | `PUT /update` | Actualiza por `_id`; las claves `_id` e `id` se descartan del cuerpo. |
 | `delete(tableName, id)` | `DELETE /delete` | Elimina por `_id`. |
 | `executeQuery(id, params?)` | `POST /execute-query` | Ejecuta una consulta guardada en la consola. Vía para joins, orden y paginación. |
 
-> ⚠️ **`createMany` puede tener éxito parcial.** `/insert` responde `200` aunque rechace registros. Revisa siempre `skipped`:
+> ⚠️ **`createMany` puede tener éxito parcial.** `/insert` responde `200` aunque rechace registros. Usa `strict: true` para que un rechazo sea un error, o revisa `skipped` a mano:
+
+```ts
+try {
+  await db.createMany('usuarios', registros, { strict: true });
+} catch (e) {
+  if (e instanceof RoblePartialInsertException) {
+    // e.result.inserted -> lo que SÍ se escribió (útil para deshacer)
+    console.warn(e.message);
+  }
+}
+```
+
 >
 > ```ts
 > const res = await db.createMany('usuarios', registros);
@@ -220,82 +241,9 @@ await db.register({
 
 | Método | Equivale a |
 | --- | --- |
-| `getAll(tableName)` | `read(tableName)` |
 | `getById(tableName, id)` | `read(…, {_id: id})`, devuelve el registro o `null` |
-| `getWhere(tableName, column, value)` | `read(…, {[column]: value})` |
 
 ---
-
-## ⚡ Realtime
-
-El servicio Realtime es un árbol JSON por proyecto, con una API al estilo de Firebase Realtime Database. El primer segmento de la ruta es la colección.
-
-```ts
-const mensajes = db.realtime.ref('messages/general');
-
-const id = await mensajes.push({ texto: 'Hola', autor: 'ana' });
-await mensajes.child(id).update({ status: 'read' });
-
-const todos = await mensajes.get();
-const soloClaves = await mensajes.get({ shallow: true });
-
-await mensajes.child(id).remove();
-```
-
-| Método | HTTP | Descripción |
-| --- | --- | --- |
-| `db.realtime.ref(path?)` | — | Referencia a una ruta. Sin argumentos, la raíz del proyecto. |
-| `db.realtime.collections()` | `GET /realtime/{db}` | Nombres de las colecciones. |
-| `db.realtime.health()` | `GET /realtime/health` | Estado de PostgreSQL, event bus y CDC. Sin autenticación. |
-| `ref.get({shallow})` | `GET` | Valor JSON en la ruta. Con `shallow`, solo las claves inmediatas. |
-| `ref.set(value)` | `PUT` | Sobrescribe. Crea la colección si no existe. |
-| `ref.update(fields)` | `PATCH` | Fusiona campos con el objeto existente. |
-| `ref.push(value)` | `POST` | Agrega un hijo con ID autogenerado. Devuelve el ID. |
-| `ref.remove()` | `DELETE` | Elimina la ruta. Si es solo la colección, la elimina completa. |
-
-Las referencias son inmutables y navegables: `ref.child('a/b')`, `ref.parent`, `ref.key`, `ref.path`.
-
-Con `shallow: true` las hojas conservan su valor y los hijos objeto/array se marcan con `$$kind`:
-
-```json
-{ "general": { "$$kind": "object" } }
-```
-
-### Suscripciones en tiempo real
-
-Escuchar cambios abre un WebSocket contra el host de realtime. Cada escucha devuelve su función de cancelación.
-
-```ts
-// Valor del nodo: emite al suscribirse y tras cada cambio.
-const off = db.realtime.ref('messages/general').onValue((valor) => {
-  render(valor);
-});
-
-// Más adelante:
-off();
-```
-
-Para el evento crudo, sin releer nada:
-
-```ts
-const off = db.realtime.ref('messages/general').onEvent((e) => {
-  console.log(e.operation, e.pathString, e.oldValue, e.newValue);
-});
-```
-
-| Miembro | Descripción |
-| --- | --- |
-| `ref.onValue(cb, {onError})` | Valor actual del nodo al suscribirse y tras cada cambio. |
-| `ref.onEvent(cb, {onError})` | Evento crudo: `operation`, `path`, `pathString`, `oldValue`, `newValue`, `raw`. |
-| `db.realtime.status` | `'disconnected' | 'connecting' | 'connected' | 'error'`. |
-| `db.realtime.onStatusChange` | Callback en cada cambio de estado. |
-| `db.realtime.close()` | Cierra el socket y cancela todas las escuchas. |
-
-Una escucha recibe los cambios de su ruta **y de sus descendientes**. El socket se abre solo cuando hay al menos una escucha, se comparte entre todas, se resuscribe al reconectar y se cierra cuando no queda ninguna.
-
-**`onValue` relee el nodo por REST tras cada evento.** El `newValue` del servidor es parcial y no distingue `PATCH` (fusiona) de `PUT` (sobrescribe), así que reconstruirlo en el cliente daría resultados incorrectos tras un `set()`. Si solo necesitas el evento, `onEvent` no hace ninguna petición extra.
-
-> ⚠️ **`set()` solo acepta objetos y arrays.** A diferencia de Firebase, el servidor rechaza un escalar como cuerpo: `set(0)`, `set(false)` y `set('texto')` devuelven `400`. Para guardar un valor suelto, envuélvelo: `ref.set({ valor: 0 })`.
 
 ## ❌ Manejo de errores
 
@@ -308,6 +256,7 @@ Todas las llamadas lanzan una excepción que hereda de `RobleApiException`:
 | `RobleApiFormatException` | La respuesta no se puede parsear | `Respuesta con formato inválido` |
 | `RobleApiHttpException` | El servidor responde fuera de 2xx | El `message` del servidor. Expone además `statusCode`. |
 | `RobleApiAuthException` | No hay refresh token, el refresco falla o no hay sesión al cerrar | `Token expirado y no se pudo refrescar: …` |
+| `RoblePartialInsertException` | `createMany(…, {strict: true})` con filas rechazadas | `El servidor rechazó 1 de 3 registros: fila 2 (…)`. Expone `result`. |
 | `RobleApiException` | Cualquier otro error inesperado | `Error inesperado: …` |
 
 ```ts

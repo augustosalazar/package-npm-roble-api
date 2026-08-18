@@ -4,38 +4,72 @@
 
 ### Cambios incompatibles
 
-- **`currentUser()` ahora devuelve el perfil del usuario, no los datos del
-  token.** Pasa de `GET /verify-token` a `GET /me`, que es lo que realmente
-  interesa a una app: `userId`, `email`, `name`, el `extra` del registro y las
-  fechas de creación y actualización. Antes devolvía los claims del JWT
-  (`sub`, `role`, `sessionId`), que son detalle interno de la autenticación.
+- **El servicio Realtime sale de la API pública.** Se retiran `db.realtime` y
+  los tipos `RobleRealtime*` mientras se estabiliza, junto con la dependencia
+  `socket.io-client` y el campo `realtimeBaseUrl`. El código sigue en el
+  historial (`v3.0.0`) para reincorporarlo más adelante.
 
-  | Antes (`/verify-token`) | Ahora (`/me`) |
+- **La sesión deja de ser manipulable desde fuera.** Desaparecen
+  `accessToken`, `refreshToken`, `setTokens()`, `clearTokens()` y
+  `onTokenUpdate`. En su lugar hay un único miembro de consulta,
+  `isLoggedIn`. Los métodos que mutan la sesión pasan a campos privados de
+  JavaScript (`#`), así que tampoco son alcanzables desde JS, no solo desde
+  TypeScript.
+
+  | Antes | Ahora |
   | --- | --- |
-  | `sub` | `userId` |
-  | `email` | `email` |
-  | `dbName`, `role`, `sessionId` | — |
-  | — | `id`, `name`, `extra`, `createdAt`, `updatedAt` |
+  | `db.accessToken !== null` | `db.isLoggedIn` |
+  | `db.setTokens(...)` | pasar `storage` y `restoreSession()` |
+  | `db.clearTokens()` | `logout()` |
 
+- **Se recorta la superficie de datos a lo esencial.** Desaparecen
+  `createTable()` y `getTableData()` —usaban endpoints que ROBLE no
+  documenta—, `createTableFromTemplate()` (las tablas se crean en la consola)
+  y los envoltorios `getAll()` y `getWhere()`, que eran `read()` con otro
+  nombre. Se mantiene `getById()`.
+
+  | Antes | Ahora |
+  | --- | --- |
+  | `getAll(tabla)` | `read(tabla)` |
+  | `getWhere(tabla, col, valor)` | `read(tabla, {col: valor})` |
+
+- **`currentUser()` devuelve el perfil del usuario, no los datos del token.**
+  Pasa de `GET /verify-token` a `GET /me`: `userId`, `email`, `name`, el
+  `extra` del registro y las fechas. Antes devolvía los claims del JWT
+  (`sub`, `role`, `sessionId`), que son detalle interno de la autenticación.
   Si leías `user.sub`, usa `user.userId`. La librería ya no llama a
-  `/verify-token`: la validez del token la gestiona ella sola con el refresco
-  automático.
+  `/verify-token`.
 
-- **`login()` devuelve el perfil del usuario, no los tokens.** Tras
-  autenticar pide `/me` y devuelve `RobleUser`. Los tokens se guardan
-  internamente y siguen disponibles en `accessToken` y `refreshToken`.
-
-  Si la llamada a `/me` falla, la sesión **sigue activa**: el error se propaga
-  pero `accessToken` ya tiene valor, así que se puede distinguir un fallo de
+- **`login()` devuelve ese mismo perfil, no los tokens.** Si la llamada a
+  `/me` falla, la sesión **sigue activa**: el error se propaga pero
+  `isLoggedIn` ya es `true`, así que se puede distinguir un fallo de
   credenciales de uno de perfil y reintentar con `currentUser()`.
 
 ### Añadido
 
-- **Persistencia de sesión opcional**: la interfaz `RobleStorage`, el campo
-  `storage` de la configuración y `restoreSession()`. El cliente guarda la
-  sesión en cada login y refresco y la borra al cerrar sesión. En el navegador
-  usa `localStorage` si no se indica nada. Sin `storage`, los tokens siguen
-  viviendo solo en memoria, como hasta ahora.
+- **`register({autoLogin: true})`** inicia sesión al terminar el registro y
+  devuelve el perfil, igual que `login`. Por defecto es `false` y se sigue
+  devolviendo el mensaje del servidor. `registerWithVerification` no lo
+  admite: hasta validar el código del correo la cuenta no puede entrar.
+- **`login({persistSession: false})`** mantiene la sesión solo en memoria y
+  **borra la que hubiera guardada**, para no dejar una sesión anterior
+  recuperable. El valor se respeta también en los refrescos posteriores.
+- **`createMany(..., {strict: true})`** lanza `RoblePartialInsertException` si
+  el servidor rechaza alguna fila. La excepción conserva el resultado
+  completo, así que se sabe qué sí llegó a escribirse.
+- **`restoreSession()` comprueba que la sesión siga viva**: además de cargar
+  los tokens guardados, renueva el access token contra el servidor. Si el
+  refresh token caducó, limpia la sesión y devuelve `false`. Los fallos de red
+  se propagan en lugar de borrarla. Con `{verify: false}` solo lee el
+  almacenamiento.
+- **Persistencia de sesión opcional**: la interfaz `RobleStorage` y el campo
+  `storage`. En el navegador usa `localStorage` si no se indica nada; en Node
+  y React Native hay que pasarlo.
+- **`createRobleClient` valida su configuración** y lanza `Error` si `baseUrl`
+  no es una URL o si el `contractId` está vacío o sigue siendo un valor de
+  ejemplo.
+- **Pista en el `500` de autenticación**: es lo que devuelve Roble cuando el
+  contrato no existe, así que el mensaje ahora lo sugiere.
 
 ### Corregido
 

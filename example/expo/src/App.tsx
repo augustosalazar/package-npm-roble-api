@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -13,30 +13,36 @@ import {
   RobleApiHttpException,
 } from 'roble-client';
 
+/** 👇 Cámbialo por el identificador de tu proyecto en la consola de Roble. */
+const CONTRACT_ID = 'tu_contrato';
+const BASE_URL = 'https://roble-api.test-openlab.uninorte.edu.co';
+
 export default function App() {
   const [log, setLog] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [lastEmail, setLastEmail] = useState<string | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [rtStatus, setRtStatus] = useState<string>('disconnected');
-  const offRealtime = useRef<(() => void) | null>(null);
+  const [logged, setLogged] = useState(false);
 
   // === CONFIGURAR CLIENTE ===
-  const db = useMemo(
-    () =>
-      createRobleClient({
-        baseUrl: 'https://roble-api.test-openlab.uninorte.edu.co',
-        contractId: 'tu_contrato',
-        // El WebSocket de Realtime solo funciona contra el host de realtime.
-        realtimeBaseUrl: 'https://roble-realtime.test-openlab.uninorte.edu.co',
-      }),
-    []
-  );
+  // createRobleClient valida la configuración y avisa si falta el contrato.
+  const { db, configError } = useMemo(() => {
+    try {
+      return {
+        db: createRobleClient({
+          baseUrl: BASE_URL,
+          contractId: CONTRACT_ID,
+          // En React Native no hay almacén por defecto: pásale AsyncStorage o
+          // expo-secure-store para que la sesión sobreviva al cierre de la app.
+          // storage: AsyncStorage,
+        }),
+        configError: null as string | null,
+      };
+    } catch (e) {
+      return { db: null, configError: (e as Error).message };
+    }
+  }, []);
 
-  // El cliente avisa cada vez que cambia el access token.
-  useEffect(() => {
-    db.onTokenUpdate = (token) => setAccessToken(token);
-  }, [db]);
+  const sync = () => setLogged(db!.isLoggedIn);
 
   const appendLog = (text: string) => setLog((prev) => prev + text + '\n');
 
@@ -48,7 +54,7 @@ export default function App() {
       const email = `test_user_${Date.now()}@mail.com`;
       appendLog(`Creando usuario: ${email}`);
 
-      const res = await db.register({
+      const res = await db!.register({
         name: 'Usuario Prueba',
         email,
         password: 'Password123!',
@@ -71,11 +77,12 @@ export default function App() {
     try {
       setLoading(true);
       appendLog(`Iniciando sesión con ${lastEmail}...`);
-      const user = await db.login({
+      const user = await db!.login({
         email: lastEmail,
         password: 'Password123!',
       });
       appendLog(`Sesión iniciada como ${user.name} (${user.userId})`);
+      sync();
     } catch (e) {
       // Las excepciones tipadas permiten distinguir el tipo de fallo.
       if (e instanceof RobleApiHttpException) {
@@ -91,7 +98,7 @@ export default function App() {
   };
 
   const logoutUser = async () => {
-    if (!accessToken) {
+    if (!db!.isLoggedIn) {
       appendLog('No hay sesión activa para cerrar.');
       return;
     }
@@ -99,8 +106,9 @@ export default function App() {
     try {
       setLoading(true);
       appendLog('Cerrando sesión...');
-      await db.logout(); // sin argumentos; limpia los tokens
+      await db!.logout(); // sin argumentos; limpia los tokens
       appendLog('Sesión cerrada correctamente.');
+      sync();
     } catch (e: any) {
       appendLog(`Error cerrando sesión: ${e?.message}`);
     } finally {
@@ -108,29 +116,8 @@ export default function App() {
     }
   };
 
-  const createTestTable = async () => {
-    if (!accessToken) {
-      appendLog('Debes iniciar sesión antes de crear tablas.');
-      return;
-    }
-
-    try {
-      setLoading(true);
-      appendLog('Creando tabla "usuarios_test"...');
-      await db.createTable('usuarios_test', [
-        { name: 'nombre', type: 'text' },
-        { name: 'rol', type: 'text' },
-      ]);
-      appendLog('Tabla creada correctamente.');
-    } catch (e: any) {
-      appendLog(`Error creando tabla: ${e?.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const insertIntoTestTable = async () => {
-    if (!accessToken) {
+    if (!db!.isLoggedIn) {
       appendLog('Debes iniciar sesión antes de agregar datos.');
       return;
     }
@@ -138,7 +125,7 @@ export default function App() {
     try {
       setLoading(true);
       appendLog('Insertando registro en "usuarios_test"...');
-      const created = await db.create('usuarios_test', {
+      const created = await db!.create('usuarios_test', {
         nombre: 'Carlos',
         rol: 'tester',
       });
@@ -151,7 +138,7 @@ export default function App() {
   };
 
   const testCrud = async () => {
-    if (!accessToken) {
+    if (!db!.isLoggedIn) {
       appendLog('Debes iniciar sesión antes de probar CRUD.');
       return;
     }
@@ -159,24 +146,24 @@ export default function App() {
     try {
       setLoading(true);
       appendLog('Creando registro...');
-      const created = await db.create('usuarios_test', {
+      const created = await db!.create('usuarios_test', {
         nombre: 'Juan',
         rol: 'admin',
       });
       appendLog(`Registro creado: ${JSON.stringify(created)}`);
 
       appendLog('Leyendo registros...');
-      const data = await db.read('usuarios_test');
+      const data = await db!.read('usuarios_test');
       appendLog(`Se obtuvieron ${data.length} registros.`);
 
       appendLog('Actualizando registro...');
-      const updated = await db.update('usuarios_test', created._id, {
+      const updated = await db!.update('usuarios_test', created._id, {
         rol: 'editor',
       });
       appendLog(`Registro actualizado: ${JSON.stringify(updated)}`);
 
       appendLog('Eliminando registro...');
-      const deleted = await db.delete('usuarios_test', created._id);
+      const deleted = await db!.delete('usuarios_test', created._id);
       appendLog(`Registro eliminado: ${JSON.stringify(deleted)}`);
 
       appendLog('CRUD completo.');
@@ -187,56 +174,19 @@ export default function App() {
     }
   };
 
-  // === REALTIME ===
-
-  const salaRef = useMemo(() => db.realtime.ref('demo/sala'), [db]);
-
-  const toggleRealtime = () => {
-    if (offRealtime.current) {
-      offRealtime.current();
-      offRealtime.current = null;
-      appendLog('Escucha cancelada.');
-      return;
-    }
-
-    if (!accessToken) {
-      appendLog('Debes iniciar sesión antes de escuchar en tiempo real.');
-      return;
-    }
-
-    db.realtime.onStatusChange = setRtStatus;
-
-    // onValue emite el valor actual y vuelve a emitirlo tras cada cambio.
-    offRealtime.current = salaRef.onValue(
-      (valor) => {
-        const n = valor && typeof valor === 'object' ? Object.keys(valor).length : 0;
-        appendLog(`Realtime: ${n} elemento(s) en ${salaRef.path}`);
-      },
-      { onError: (e) => appendLog(`Error de realtime: ${String(e)}`) }
-    );
-    appendLog(`Escuchando ${salaRef.path}...`);
-  };
-
-  const pushRealtime = async () => {
-    if (!accessToken) {
-      appendLog('Debes iniciar sesión antes de escribir.');
-      return;
-    }
-    try {
-      const id = await salaRef.push({
-        texto: 'Hola desde Expo',
-        timestamp: new Date().toISOString(),
-      });
-      appendLog(`Elemento agregado: ${id}`);
-    } catch (e: any) {
-      appendLog(`Error al agregar: ${e?.message}`);
-    }
-  };
-
-  // Cierra el socket al desmontar la pantalla.
-  useEffect(() => () => db.realtime.close(), [db]);
-
   // === UI ===
+  if (configError) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>Configuración</Text>
+        <Text>{configError}</Text>
+        <Text style={{ marginTop: 12 }}>
+          Edita CONTRACT_ID en example/expo/src/App.tsx
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Roble API Tester</Text>
@@ -251,18 +201,12 @@ export default function App() {
         <Button label="Crear usuario" onPress={createUser} />
         <Button label="Iniciar sesión" onPress={loginUser} />
         <Button label="Cerrar sesión" onPress={logoutUser} />
-        <Button label="Crear tabla de prueba" onPress={createTestTable} />
         <Button label="Agregar dato a tabla" onPress={insertIntoTestTable} />
         <Button label="Probar CRUD" onPress={testCrud} />
-        <Button
-          label={offRealtime.current ? 'Dejar de escuchar' : 'Escuchar realtime'}
-          onPress={toggleRealtime}
-        />
-        <Button label="Agregar a realtime" onPress={pushRealtime} />
       </View>
 
       <Text style={styles.logTitle}>
-        Log de operaciones (realtime: {rtStatus}):
+        Log de operaciones (sesión: {logged ? 'activa' : 'sin iniciar'}):
       </Text>
       <ScrollView
         style={styles.logContainer}
